@@ -1,0 +1,65 @@
+rules_version = '2';
+// Reglas de seguridad · Control Agrícola AeroCAS
+// Pegar completas en Firebase → Firestore Database → Reglas → Publicar.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function dentro() { return request.auth != null; }
+    function perfil() { return /databases/$(database)/documents/usuarios/$(request.auth.uid); }
+    function esAdmin() {
+      return dentro() && (request.auth.uid == 'FsBVYYQXT4YMtHDgcgsgoEH9N1m1'
+        || (exists(perfil()) && get(perfil()).data.rol == 'admin' && get(perfil()).data.activo == true));
+    }
+    function activo() { return esAdmin() || (dentro() && exists(perfil()) && get(perfil()).data.activo == true); }
+
+    // Usuarios: cada uno lee su perfil; solo el administrador crea o cambia.
+    match /usuarios/{uid} {
+      allow read: if dentro() && (request.auth.uid == uid || esAdmin());
+      allow write: if esAdmin();
+    }
+
+    // Configuración y catálogos
+    match /config/{id} {
+      allow read: if activo();
+      allow write: if esAdmin();
+    }
+
+    // Lotes
+    match /lotes/{id} {
+      allow read: if activo();
+      allow write: if esAdmin();
+    }
+
+    // Registros de campo
+    match /registros/{id} {
+      allow read: if esAdmin() || (activo() && resource.data.autorUid == request.auth.uid);
+      allow create: if activo()
+        && request.resource.data.autorUid == request.auth.uid
+        && (request.resource.data.estado == 'pendiente' || (esAdmin() && request.resource.data.estado == 'aprobado'));
+      // Administrador: aprobar, rechazar, pedir corrección, editar o anular.
+      // Usuario de campo: solo sus registros pendientes o en corrección, y vuelven a "pendiente".
+      allow update: if esAdmin() || (activo()
+        && resource.data.autorUid == request.auth.uid
+        && resource.data.estado in ['pendiente', 'correccion']
+        && request.resource.data.estado == 'pendiente'
+        && request.resource.data.autorUid == resource.data.autorUid
+        && request.resource.data.autoaprobado == resource.data.autoaprobado);
+      allow delete: if false; // nunca se borra: se anula
+    }
+
+    // Fotos comprimidas (máx. ~1 MB por documento)
+    match /fotos/{id} {
+      allow read: if esAdmin() || (activo() && resource.data.autorUid == request.auth.uid);
+      allow create: if activo() && request.resource.data.autorUid == request.auth.uid
+        && request.resource.data.data is string && request.resource.data.data.size() < 1000000;
+      allow update, delete: if false;
+    }
+
+    // Historial de cambios: se escribe, nunca se edita ni se borra.
+    match /auditoria/{id} {
+      allow read: if esAdmin();
+      allow create: if activo() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}
