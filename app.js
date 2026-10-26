@@ -170,6 +170,7 @@ function iniciarMapa() {
   grupoLotes = L.layerGroup().addTo(mapa);
   grupoClusters = L.layerGroup().addTo(mapa);
   mapa.on("zoomend", alternarClusters);
+  mapa.on("moveend", () => { try { const c = mapa.getCenter(); localStorage.setItem("ultimaVista", JSON.stringify({ lat: c.lat, lng: c.lng, z: mapa.getZoom() })); } catch (e) {} });
   mapa.on("click", e => { if (midiendo) agregarPuntoMedida(e.latlng); });
   if ("geolocation" in navigator) {
     navigator.geolocation.watchPosition(p => {

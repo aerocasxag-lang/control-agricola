@@ -18,8 +18,9 @@ textarea{min-height:70px;resize:vertical}
 label{display:grid;gap:4px;font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
 label > input, label > select, label > textarea{text-transform:none;letter-spacing:0}
 h1,h2,h3{font-family:var(--display);margin:0;line-height:1.1}
-svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-svg .fill{fill:currentColor;stroke:none}
+/* Íconos de la interfaz (no tocar las capas SVG de Leaflet) */
+.fab svg,.tabbar svg,.ficha-ico svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.fab svg .fill{fill:currentColor;stroke:none}
 
 .cargando{position:fixed;inset:0;display:grid;place-items:center;font-family:var(--display);font-size:1.4rem;color:var(--muted)}
 

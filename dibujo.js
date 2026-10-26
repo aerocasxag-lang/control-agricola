@@ -42,7 +42,9 @@
     document.body.append(ov);
     const $ = id => ov.querySelector("#" + id);
 
-    const mapa = L.map($("dbMapa"), { zoomControl: false }).setView([5.33, -72.39], 15);
+    let vista = { lat: 5.33, lng: -72.39, z: 15 };
+    try { const v = JSON.parse(localStorage.getItem("ultimaVista")); if (v && isFinite(v.lat)) vista = { ...v, z: Math.max(v.z, 15) }; } catch (e) {}
+    const mapa = L.map($("dbMapa"), { zoomControl: false, maxZoom: 21 }).setView([vista.lat, vista.lng], vista.z);
     L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       { maxZoom: 21, maxNativeZoom: 18, attribution: "Imágenes © Esri" }).addTo(mapa);
 
