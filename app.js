@@ -1,4 +1,4 @@
-// Control Agrícola · AeroCAS — entrega 1-2
+// Control Agrícola · AeroCAS — v0.4 (entrega 4: todos los módulos de registro, inventario y costos)
 // App web offline-first con Firebase (Auth + Firestore con caché local).
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword }
@@ -6,11 +6,13 @@ import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, creat
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, updateDoc,
   getDoc, getDocs, onSnapshot, query, where, serverTimestamp, increment, deleteDoc }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
-import { areaHa, parseKml, centroide, fechaLocal, diasEntre, horasEntre, comprimirFoto, csvEscape } from "./util.js";
+import { areaHa, parseKml, centroide, fechaLocal, diasEntre, comprimirFoto, csvEscape } from "./util.js";
+import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, vistaCalculo, revisar, resumen, filasCalculadas, fmtDosis,
+  inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS } from "./modulos.js";
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir } from "./orto.js";
 
-const VERSION = "0.3 · 25-oct-2026";
+const VERSION = "0.4 · 25-oct-2026";
 const ADMIN_UID = "FsBVYYQXT4YMtHDgcgsgoEH9N1m1";
 const firebaseConfig = {
   apiKey: "AIzaSyCpf4LRwovuqNdGG5BENvDBS7OHwbIoEQw",
@@ -30,14 +32,8 @@ const S = {
   user: null, perfil: null, admin: false,
   lotes: [], catalogos: null, registros: [], pendientesSync: 0,
   loteSel: null, finca: "", gps: null, unsubs: [],
-  filtroReg: "todos", seg: "reg", base: "sat",
+  filtroReg: "todos", filtroTipo: "", seg: "reg", base: "sat",
   ortos: [], verOrto: true, verVigor: false, ortoSel: {} // ortoSel[loteId] = id del ortomosaico elegido
-};
-const CAT_DEFECTO = {
-  productos: ["15-15-15", "DAP 18-46-0", "Urea 46%", "KCl 60%", "Cal dolomita"],
-  motobombas: ['Motobomba 2" gasolina'],
-  plagas: [{ nombre: "Cogollero (daño Davis ≥ 3)", umbral: 20 }, { nombre: "Pulgón amarillo (1 o más)", umbral: 20 },
-    { nombre: "Hormiga arriera", umbral: 5 }, { nombre: "Otra", umbral: 20 }]
 };
 const ESTADOS = { pendiente: "Pendiente", aprobado: "Aprobado", rechazado: "Rechazado", correccion: "Corrección", anulado: "Anulado" };
 
@@ -127,9 +123,9 @@ onAuthStateChanged(auth, async user => {
   }, () => {}));
   // Catálogos
   S.unsubs.push(onSnapshot(doc(db, "config", "catalogos"), snap => {
-    S.catalogos = snap.exists() ? snap.data() : CAT_DEFECTO;
+    S.catalogos = normCat(snap.exists() ? snap.data() : CAT_DEFECTO);
     if (!snap.exists() && S.admin && !snap.metadata.fromCache) setDoc(doc(db, "config", "catalogos"), CAT_DEFECTO);
-  }, () => { S.catalogos = CAT_DEFECTO; }));
+  }, () => { S.catalogos = normCat(CAT_DEFECTO); }));
   $("version").textContent = "Versión " + VERSION;
 });
 
@@ -385,7 +381,7 @@ function pintarFicha(l) {
   const filas = [["Municipio", l.municipio || "—"], ["Ciclo", l.ciclo || "—"],
     ["Siembra", l.fechaSiembra ? `${fmtFecha(l.fechaSiembra)} (${dds >= 0 ? dds + " días" : "faltan " + -dds + " días"})` : "Sin fecha"],
     ["Área sembrada", l.area_ha ? num(l.area_ha, 2) + " ha" : "Sin registrar"], ["Área del borde", aBorde ? num(aBorde, 2) + " ha" : "Sin borde"],
-    ["Secciones de riego", l.secciones || "—"]];
+    ["Secciones de riego", l.secciones || "—"], ["Corte previsto", l.fechaCorte ? `${fmtFecha(l.fechaCorte)} (${diasEntre(fechaLocal(), l.fechaCorte) >= 0 ? "faltan " + diasEntre(fechaLocal(), l.fechaCorte) + " días" : "ya pasó"})` : "Sin fecha"]];
   $("fMas").replaceChildren(...filas.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]));
   $("fEditar").hidden = !S.admin;
   document.querySelectorAll("#ficha .seg button").forEach(b => b.setAttribute("aria-selected", b.dataset.seg === S.seg ? "true" : "false"));
@@ -468,88 +464,93 @@ function formLote(l) {
     el("div", { class: "grid2" }, inp("loFinca", "Finca", v.finca), inp("loMun", "Municipio", v.municipio)),
     el("div", { class: "grid2" }, inp("loArea", "Área sembrada (ha)", v.area_ha, "number", { step: "0.01", inputmode: "decimal" }), inp("loSecc", "Secciones de riego", v.secciones, "number", { inputmode: "numeric" })),
     el("div", { class: "grid2" }, el("label", { for: "loCiclo" }, "Ciclo actual", sel), inp("loSiembra", "Fecha de siembra", v.fechaSiembra, "date")),
+    el("div", { class: "grid2" }, inp("loCorte", "Corte previsto", v.fechaCorte, "date"), el("span")),
     el("label", { for: "loBorde" }, "Borde del lote (KML o KMZ)", archivo), info,
     el("button", { class: "btn primary", onclick: () => {
       const nombre = $("loNombre").value.trim(); if (!nombre) { toast("Falta el nombre", true); return; }
       const datos = { nombre, finca: $("loFinca").value.trim(), municipio: $("loMun").value.trim(), area_ha: parseFloat($("loArea").value) || null,
-        secciones: parseInt($("loSecc").value) || null, ciclo: sel.value, fechaSiembra: $("loSiembra").value || null, borde, actualizado: serverTimestamp() };
+        secciones: parseInt($("loSecc").value) || null, ciclo: sel.value, fechaSiembra: $("loSiembra").value || null, fechaCorte: $("loCorte").value || null, borde, actualizado: serverTimestamp() };
       const ref = l ? doc(db, "lotes", l.id) : doc(collection(db, "lotes"));
       setDoc(ref, l ? datos : { ...datos, creado: serverTimestamp(), archivado: false }, { merge: true }).catch(e => toast("No se guardó: " + e.code, true));
       cerrarModal(); toast(l ? "Lote actualizado" : "Lote creado"); pintarLotes.ajustado = false;
     } }, l ? "Guardar cambios" : "Crear lote"));
 }
 
-// ---------- Registros: tipos y formularios ----------
-const TIPOS = {
-  riego: { nombre: "Jornada de riego", desc: "Sección, horas de motobomba, gasolina", ico: "💧",
-    campos: [
-      { k: "seccion", l: "Sección regada", t: "seccion" },
-      { k: "motobomba", l: "Motobomba", t: "cat", cat: "motobombas" },
-      { k: "horaInicio", l: "Hora de inicio", t: "time", req: true },
-      { k: "horaFin", l: "Hora final", t: "time", req: true },
-      { k: "llego", l: "¿El agua llegó al final de los surcos?", t: "sino", def: true },
-      { k: "nivelPozo", l: "Nivel del agua del pozo", t: "sel", ops: ["Normal", "Bajo", "Muy bajo"] },
-      { k: "galones", l: "Gasolina tanqueada (galones)", t: "num", step: "0.1" },
-      { k: "obs", l: "Observaciones", t: "texto" }] },
-  fertilizacion: { nombre: "Fertilización", desc: "Producto, cantidad y área abonada", ico: "🌱",
-    campos: [
-      { k: "producto", l: "Producto", t: "cat", cat: "productos", req: true },
-      { k: "cantidad", l: "Cantidad aplicada", t: "num", step: "0.1", req: true },
-      { k: "unidad", l: "Unidad", t: "sel", ops: ["kg", "bultos de 50 kg", "L", "g"] },
-      { k: "area", l: "Área abonada (ha)", t: "num", step: "0.01" },
-      { k: "metodo", l: "Método", t: "sel", ops: ["En banda", "Al voleo", "Al pie de la planta", "Incorporado"] },
-      { k: "fotos", l: "Fotos", t: "fotos" },
-      { k: "obs", l: "Observaciones", t: "texto" }] },
-  plaga: { nombre: "Monitoreo de plagas", desc: "Plantas revisadas y afectadas, con umbral", ico: "🐛",
-    campos: [
-      { k: "plaga", l: "Plaga", t: "plaga", req: true },
-      { k: "seccion", l: "Sección o punto", t: "seccion" },
-      { k: "revisadas", l: "Plantas revisadas", t: "num", def: 50, req: true },
-      { k: "afectadas", l: "Plantas afectadas", t: "num", def: 0, req: true },
-      { k: "fotos", l: "Fotos", t: "fotos" },
-      { k: "obs", l: "Observaciones", t: "texto" }] }
-};
-
+// ---------- Registros: menú y formularios ----------
+const catActual = () => S.catalogos || normCat(CAT_DEFECTO);
 function elegirTipo(loteId) {
   const lotes = lotesVisibles();
   if (!lotes.length) { toast(S.admin ? "Primero crea un lote." : "No hay lotes creados.", true); return; }
   if (!loteId && lotes.length === 1) loteId = lotes[0].id;
   if (!loteId) {
-    abrirModal("¿En qué lote?", el("div", { class: "tipos" }, lotes.map(l => el("button", { onclick: () => elegirTipo(l.id) }, el("div", {}, el("b", {}, l.nombre), el("span", {}, [l.finca, l.ciclo].filter(Boolean).join(" · ")))))));
+    abrirModal("¿En qué lote?", el("div", { class: "tipos" }, lotes.map(l => el("button", { onclick: () => elegirTipo(l.id) }, el("div", {}, el("b", {}, l.nombre), el("span", {}, [l.finca, l.ciclo].filter(Boolean).join(" · ")))))),
+      el("button", { class: "btn", onclick: () => formRegistro("compra", null) }, "🧾 Compra de insumos (no va a un lote)"));
     return;
   }
   const l = lotePorId(loteId);
-  abrirModal(`Registrar en ${l.nombre}`, el("div", { class: "tipos" }, Object.entries(TIPOS).map(([k, t]) =>
-    el("button", { onclick: () => formRegistro(k, loteId) }, el("span", { style: "font-size:1.6rem" }, t.ico), el("div", {}, el("b", {}, t.nombre), el("span", {}, t.desc))))),
-    el("p", { class: "hint" }, "Siembra, fumigación, combustible, inspección, labores y cosecha llegan en las siguientes entregas."));
+  abrirModal(`Registrar en ${l.nombre}`, el("div", { class: "tipos" }, ORDEN_TIPOS.map(k => { const t = TIPOS[k];
+    return el("button", { onclick: () => formRegistro(k, t.sinLote ? null : loteId) }, el("span", { style: "font-size:1.6rem", "aria-hidden": "true" }, t.ico), el("div", {}, el("b", {}, t.nombre), el("span", {}, t.desc))); })));
 }
 $("bRegistrar").addEventListener("click", () => elegirTipo(null));
 $("bNuevo").addEventListener("click", () => elegirTipo(S.loteSel));
 
+function selectOtro(id, ops, valor, etiqueta = "Escribe el nombre") {
+  const s = el("select", { id }, ops.map(o => el("option", { value: o }, o)), el("option", { value: "__otro" }, "Otro…"));
+  if (valor) { if (!ops.includes(valor)) s.prepend(el("option", { value: valor }, valor)); s.value = valor; }
+  s.addEventListener("change", () => { if (s.value !== "__otro") return; const o = window.prompt(etiqueta); if (o && o.trim()) { s.prepend(el("option", { value: o.trim() }, o.trim())); s.value = o.trim(); } else s.selectedIndex = 0; s.dispatchEvent(new Event("input", { bubbles: true })); });
+  return s;
+}
+// Varios productos con su dosis por hectárea (mezcla de tanque)
+function ctrlDosis(id, campo, cat, previos) {
+  const ops = prodsTipo(cat, campo.tipos), filas = el("div", { class: "dosis", id });
+  const fila = (p = {}) => {
+    const u = el("select", { "aria-label": "Unidad de la dosis" }, UNIDADES_DOSIS.map(x => el("option", { value: x }, x))); u.value = p.unidad || "L/ha";
+    const s = selectOtro(null, ["", ...ops], p.producto, "Nombre del producto"); s.setAttribute("aria-label", "Producto");
+    if (!p.producto) s.value = "";
+    s.querySelector('option[value=""]').textContent = "Producto…";
+    s.addEventListener("change", () => { const pr = prodDe(cat, s.value); if (pr && !p.unidad) u.value = pr.unidad === "L" ? "L/ha" : "kg/ha"; });
+    const n = el("input", { type: "number", inputmode: "decimal", step: "0.01", min: "0", "aria-label": "Dosis por hectárea", placeholder: "Dosis" }); n.value = p.dosis ?? "";
+    const f = el("div", { class: "dosis-fila" }, s, n, u,
+      el("button", { type: "button", class: "btn small", "aria-label": "Quitar producto", onclick: () => { f.remove(); filas.dispatchEvent(new Event("input", { bubbles: true })); } }, "×"));
+    f.leer = () => s.value && s.value !== "__otro" && Number(n.value) > 0 ? { producto: s.value, dosis: Number(n.value), unidad: u.value } : null;
+    filas.append(f);
+  };
+  (previos?.length ? previos : [{}]).forEach(p => fila(p));
+  const cont = el("div", { style: "display:grid;gap:8px" }, filas,
+    el("button", { type: "button", class: "btn small", onclick: () => { if (filas.children.length < 6) fila(); } }, "+ Otro producto en la mezcla"));
+  cont.valor = () => [...filas.children].map(f => f.leer()).filter(Boolean);
+  return cont;
+}
+
 function formRegistro(tipo, loteId, previo = null) {
-  const T = TIPOS[tipo], l = lotePorId(loteId), cat = S.catalogos || CAT_DEFECTO;
+  const T = TIPOS[tipo], l = T.sinLote ? null : lotePorId(loteId), cat = catActual();
+  if (!T.sinLote && !l) { toast("Lote no encontrado", true); return; }
   const val = previo ? { ...previo.datos } : {};
-  const fotos = []; // nuevas, base64
-  const ctrls = {};
-  const partes = [];
+  const fotos = [], ctrls = {}, partes = [];
   const fecha = el("input", { type: "date", id: "rFecha", max: fechaLocal() }); fecha.value = previo?.fechaHecho || fechaLocal();
   const just = el("input", { type: "text", id: "rJust", placeholder: "¿Por qué se anota días después?" }); just.value = previo?.justificacion || "";
   const lJust = el("label", { for: "rJust" }, "Justificación", just);
-  partes.push(el("label", { for: "rFecha" }, "Fecha de la labor", fecha), lJust);
-  const calc = el("div", { class: "calc", "aria-live": "polite" });
+  if (T.nota) partes.push(el("p", { class: "hint" }, T.nota));
+  partes.push(el("label", { for: "rFecha" }, tipo === "compra" ? "Fecha de la compra" : "Fecha de la labor", fecha), lJust);
+  const calc = el("div", { class: "calc", "aria-live": "polite" }), avisosBox = el("div", { class: "avisos", "aria-live": "polite" });
   for (const c of T.campos) {
     const id = "c_" + c.k; let ctrl;
+    const etiqueta = c.l + (c.req ? " *" : "");
     if (c.t === "texto") { ctrl = el("textarea", { id, rows: 3 }); ctrl.value = val[c.k] ?? ""; }
+    else if (c.t === "txt") { ctrl = el("input", { id, type: "text" }); ctrl.value = val[c.k] ?? ""; }
+    else if (c.t === "alturas") { ctrl = el("input", { id, type: "text", inputmode: "decimal", placeholder: "Ej.: 45 52 48 50 47 …" }); ctrl.value = val[c.k] ?? ""; }
     else if (c.t === "num") { ctrl = el("input", { id, type: "number", inputmode: "decimal", step: c.step || "1", min: "0" }); ctrl.value = val[c.k] ?? c.def ?? ""; }
     else if (c.t === "time") { ctrl = el("input", { id, type: "time" }); ctrl.value = val[c.k] ?? ""; }
     else if (c.t === "sel") { ctrl = el("select", { id }, c.ops.map(o => el("option", { value: o }, o))); if (val[c.k]) ctrl.value = val[c.k]; }
-    else if (c.t === "cat") { const ops = cat[c.cat] || []; ctrl = el("select", { id }, ops.map(o => el("option", { value: o }, o)), el("option", { value: "__otro" }, "Otro…")); if (val[c.k]) { if (!ops.includes(val[c.k])) ctrl.prepend(el("option", { value: val[c.k] }, val[c.k])); ctrl.value = val[c.k]; } }
-    else if (c.t === "plaga") { ctrl = el("select", { id }, (cat.plagas || []).map(p => el("option", { value: p.nombre }, p.nombre))); if (val[c.k]) ctrl.value = val[c.k]; }
-    else if (c.t === "seccion") { const n = l.secciones || 0; ctrl = el("select", { id }, el("option", { value: "Todo el lote" }, "Todo el lote"), Array.from({ length: n }, (_, i) => el("option", { value: String(i + 1) }, "Sección " + (i + 1)))); if (val[c.k]) ctrl.value = val[c.k]; }
+    else if (c.t === "cat") ctrl = selectOtro(id, cat[c.cat] || [], val[c.k]);
+    else if (c.t === "prod") ctrl = selectOtro(id, prodsTipo(cat, c.tipos), val[c.k], "Nombre del producto (pídele al administrador que lo agregue al catálogo)");
+    else if (c.t === "plaga") { ctrl = el("select", { id }, cat.plagas.map(p => el("option", { value: p.nombre }, p.nombre))); if (val[c.k]) ctrl.value = val[c.k]; }
+    else if (c.t === "seccion") { const n = l?.secciones || 0; ctrl = el("select", { id }, el("option", { value: "Todo el lote" }, "Todo el lote"), Array.from({ length: n }, (_, i) => el("option", { value: String(i + 1) }, "Sección " + (i + 1)))); if (val[c.k]) ctrl.value = val[c.k]; }
+    else if (c.t === "dosis") { ctrl = ctrlDosis(id, c, cat, val[c.k]); partes.push(el("div", { style: "display:grid;gap:6px" }, el("span", { class: "hint" }, etiqueta), ctrl)); ctrls[c.k] = ctrl; continue; }
     else if (c.t === "sino") {
       let v = val[c.k] ?? c.def ?? true;
       const bSi = el("button", { type: "button", "aria-pressed": v ? "true" : "false" }, "Sí"), bNo = el("button", { type: "button", "aria-pressed": v ? "false" : "true" }, "No");
-      ctrl = el("div", { class: "sino", id }, bSi, bNo); ctrl.valor = () => v;
+      ctrl = el("div", { class: "sino", id, role: "group", "aria-label": c.l }, bSi, bNo); ctrl.valor = () => v;
       bSi.onclick = () => { v = true; bSi.setAttribute("aria-pressed", "true"); bNo.setAttribute("aria-pressed", "false"); };
       bNo.onclick = () => { v = false; bNo.setAttribute("aria-pressed", "true"); bSi.setAttribute("aria-pressed", "false"); };
       partes.push(el("div", { style: "display:grid;gap:4px" }, el("span", { class: "hint" }, c.l), ctrl)); ctrls[c.k] = ctrl; continue;
@@ -565,44 +566,49 @@ function formRegistro(tipo, loteId, previo = null) {
       partes.push(el("label", { for: id }, c.l + " (máx. 3, se toman con la cámara)", fi), prev); ctrls[c.k] = { fotos }; continue;
     }
     ctrls[c.k] = ctrl;
-    partes.push(el("label", { for: id }, c.l + (c.req ? " *" : ""), ctrl));
-    if (c.t === "cat") ctrl.addEventListener("change", () => { if (ctrl.value === "__otro") { const o = window.prompt("Escribe el nombre"); if (o) { ctrl.prepend(el("option", { value: o }, o)); ctrl.value = o; } else ctrl.selectedIndex = 0; } });
+    partes.push(el("label", { for: id }, etiqueta, ctrl));
   }
-  if (tipo === "riego" || tipo === "plaga") partes.splice(3, 0, calc);
+  partes.push(calc, avisosBox);
   const leer = () => {
     const d = {};
-    for (const c of T.campos) { const x = ctrls[c.k]; if (!x) continue;
-      if (c.t === "sino") d[c.k] = x.valor(); else if (c.t === "fotos") continue; else if (c.t === "num") d[c.k] = x.value === "" ? null : Number(x.value); else d[c.k] = x.value; }
-    if (tipo === "riego") d.horas = horasEntre(d.horaInicio, d.horaFin);
-    if (tipo === "plaga") { const p = (cat.plagas || []).find(p => p.nombre === d.plaga); d.umbral = p?.umbral ?? 20; d.pct = d.revisadas > 0 ? Math.round((d.afectadas / d.revisadas) * 1000) / 10 : null; d.sobreUmbral = d.pct != null && d.pct >= d.umbral; }
-    return d;
+    for (const c of T.campos) { const x = ctrls[c.k]; if (!x || c.t === "fotos") continue;
+      if (c.t === "sino" || c.t === "dosis") d[c.k] = x.valor(); else if (c.t === "num") d[c.k] = x.value === "" ? null : Number(x.value); else d[c.k] = x.value; }
+    return derivar(tipo, d, cat, fecha.value);
   };
   const pintarCalc = () => {
-    const d = leer();
-    if (tipo === "riego") { calc.className = "calc" + (d.horas == null ? "" : " ok"); calc.replaceChildren(el("span", { class: "hint" }, "Tiempo de motobomba"), el("b", {}, d.horas == null ? "—" : num(d.horas, 2) + " h")); }
-    if (tipo === "plaga") { calc.className = "calc " + (d.pct == null ? "" : d.sobreUmbral ? "crit" : d.pct >= d.umbral * 0.75 ? "warn" : "ok");
-      calc.replaceChildren(el("span", { class: "hint" }, `Afectación (umbral ${d.umbral} %)`), el("b", {}, d.pct == null ? "—" : num(d.pct, 1) + " %"), el("span", {}, d.pct == null ? "" : d.sobreUmbral ? "Sobre el umbral: avisar al administrador." : "Bajo el umbral: seguir monitoreando.")); }
+    const d = leer(), v = vistaCalculo(tipo, d);
+    calc.hidden = !v;
+    if (v) { calc.className = "calc " + (v.cls || ""); calc.replaceChildren(el("span", { class: "hint" }, v.titulo), el("b", {}, v.valor), v.texto ? el("span", {}, v.texto) : null); }
+    const av = revisar(tipo, d, cat, l);
+    avisosBox.replaceChildren(...av.map(a => el("div", { class: "aviso " + (a.nivel === "bloquea" ? "crit" : "warn") }, a.t)));
     lJust.hidden = diasEntre(fecha.value, fechaLocal()) <= 3;
   };
   const cont = el("div", { style: "display:grid;gap:14px" }, ...partes);
-  cont.addEventListener("input", pintarCalc); cont.addEventListener("click", () => setTimeout(pintarCalc, 0));
+  cont.addEventListener("input", pintarCalc); cont.addEventListener("change", pintarCalc); cont.addEventListener("click", () => setTimeout(pintarCalc, 0));
   const bGuardar = el("button", { class: "btn primary", type: "button" }, previo ? "Guardar corrección" : "Guardar registro");
   bGuardar.addEventListener("click", () => {
     const d = leer();
-    for (const c of T.campos) if (c.req && (d[c.k] == null || d[c.k] === "")) { toast(`Falta: ${c.l}`, true); return; }
+    for (const c of T.campos) { const v = d[c.k]; if (c.req && (v == null || v === "" || (Array.isArray(v) && !v.length))) { toast(`Falta: ${c.l}`, true); return; } }
     if (!fecha.value) { toast("Falta la fecha", true); return; }
     if (diasEntre(fecha.value, fechaLocal()) > 3 && !just.value.trim()) { toast("La labor tiene más de 3 días: escribe la justificación.", true); return; }
-    if (tipo === "riego" && d.horas == null) { toast("La hora final debe ser después de la de inicio.", true); return; }
-    if (tipo === "plaga" && d.afectadas > d.revisadas) { toast("Las afectadas no pueden ser más que las revisadas.", true); return; }
-    guardarRegistro({ tipo, loteId, datos: d, fechaHecho: fecha.value, justificacion: just.value.trim(), fotos }, previo);
+    const bloq = revisar(tipo, d, cat, l).find(a => a.nivel === "bloquea"); if (bloq) { toast(bloq.t, true); return; }
+    guardarRegistro({ tipo, loteId: l?.id || null, datos: d, fechaHecho: fecha.value, justificacion: just.value.trim(), fotos }, previo);
     cerrarModal();
   });
-  abrirModal((previo ? "Corregir · " : "") + T.nombre, el("p", { class: "hint" }, `${l.nombre} · ${l.ciclo || ""}`), cont, bGuardar);
+  abrirModal((previo ? "Corregir · " : "") + T.nombre, el("p", { class: "hint" }, l ? `${l.nombre} · ${l.ciclo || ""}` : "Bodega (no va a un lote)"), cont, bGuardar);
   pintarCalc();
 }
 
+// El registro de siembra aprobado pone la fecha de siembra y el área sembrada en el lote.
+function aplicarSiembra(r) {
+  if (!S.admin || r.tipo !== "siembra" || !r.loteId) return;
+  const l = lotePorId(r.loteId); if (!l) return;
+  const cambios = { fechaSiembra: r.fechaHecho, area_ha: r.datos?.area || l.area_ha || null, actualizado: serverTimestamp() };
+  updateDoc(doc(db, "lotes", r.loteId), cambios).then(() => toast(`Lote actualizado: siembra ${fmtFecha(r.fechaHecho)}, ${num(cambios.area_ha, 2)} ha`)).catch(() => {});
+}
+
 function guardarRegistro({ tipo, loteId, datos, fechaHecho, justificacion, fotos }, previo) {
-  const l = lotePorId(loteId), nombre = S.perfil?.nombre || S.user.email;
+  const l = loteId ? lotePorId(loteId) : null, nombre = S.perfil?.nombre || S.user.email;
   const fotoIds = (previo?.fotos || []).slice();
   for (const b64 of fotos) {
     const fr = doc(collection(db, "fotos")); fotoIds.push(fr.id);
@@ -610,18 +616,20 @@ function guardarRegistro({ tipo, loteId, datos, fechaHecho, justificacion, fotos
   }
   if (previo) {
     const cambios = { datos, fechaHecho, justificacion, fotos: fotoIds, version: increment(1), editadoEn: serverTimestamp(), editadoPor: S.user.uid,
-      estado: S.admin && previo.estado === "aprobado" ? "aprobado" : (S.admin ? "aprobado" : "pendiente") };
+      estado: S.admin ? "aprobado" : "pendiente" };
     updateDoc(doc(db, "registros", previo.id), cambios).catch(e => toast("No se guardó la corrección (" + e.code + ")", true));
     auditar(previo.id, S.admin ? "editar" : "corregir", { datos: previo.datos, estado: previo.estado }, { datos, estado: cambios.estado });
+    if (S.admin) aplicarSiembra({ ...previo, datos, fechaHecho });
     toast("Corrección guardada");
     return;
   }
   const ref = doc(collection(db, "registros"));
-  const reg = { tipo, loteId, loteNombre: l.nombre, finca: l.finca || "", ciclo: l.ciclo || "", fechaHecho, justificacion, datos, fotos: fotoIds,
+  const reg = { tipo, loteId: l?.id || null, loteNombre: l?.nombre || "Bodega", finca: l?.finca || "", ciclo: l?.ciclo || "", fechaHecho, justificacion, datos, fotos: fotoIds,
     autorUid: S.user.uid, autorNombre: nombre, estado: S.admin ? "aprobado" : "pendiente", autoaprobado: S.admin, version: 1,
     creadoLocal: new Date().toISOString(), creado: serverTimestamp(), gps: S.gps || null };
   setDoc(ref, reg).catch(e => toast("El servidor rechazó el registro (" + e.code + ")", true));
   auditar(ref.id, "crear", null, { datos, estado: reg.estado });
+  if (S.admin) aplicarSiembra(reg);
   toast(navigator.onLine ? "Registro guardado" : "Guardado en el celular. Se envía cuando haya señal.");
 }
 function auditar(registroId, accion, antes, despues, motivo = "") {
@@ -631,26 +639,24 @@ function auditar(registroId, accion, antes, despues, motivo = "") {
 }
 
 // ---------- Lista de registros ----------
-function resumen(r) {
-  const d = r.datos || {};
-  if (r.tipo === "riego") return `Sección ${d.seccion || "—"} · ${num(d.horas, 2)} h${d.galones ? ` · ${num(d.galones, 1)} gal` : ""}${d.llego === false ? " · agua no llegó al final" : ""}`;
-  if (r.tipo === "fertilizacion") return `${d.producto} · ${num(d.cantidad, 1)} ${d.unidad || ""}${d.area ? ` en ${num(d.area, 2)} ha` : ""}`;
-  if (r.tipo === "plaga") return `${d.plaga} · ${num(d.pct, 1)} %${d.sobreUmbral ? " · sobre el umbral" : ""}`;
-  return "";
-}
 function itemRegistro(r) {
+  const T = TIPOS[r.tipo];
   return el("button", { class: "item " + r.estado, onclick: () => detalleRegistro(r.id) },
-    el("div", { class: "top" }, el("span", {}, TIPOS[r.tipo]?.nombre || r.tipo), el("span", { class: "pill " + (r._cola ? "cola" : r.estado) }, r._cola ? "En el celular" : ESTADOS[r.estado])),
+    el("div", { class: "top" }, el("span", {}, (T ? T.ico + " " + T.nombre : r.tipo)), el("span", { class: "pill " + (r._cola ? "cola" : r.estado) }, r._cola ? "En el celular" : ESTADOS[r.estado])),
     el("div", { class: "res" }, resumen(r)),
     el("div", { class: "meta" }, [fmtFecha(r.fechaHecho), r.loteNombre, r.autorNombre].filter(Boolean).join(" · ")));
 }
 const FILTROS = [["todos", "Todos"], ["pendiente", "Pendientes"], ["correccion", "Corrección"], ["aprobado", "Aprobados"], ["rechazado", "Rechazados"], ["anulado", "Anulados"]];
 function pintarRegistros() {
-  $("regFiltros").replaceChildren(...FILTROS.map(([k, t]) => {
-    const n = k === "todos" ? S.registros.length : S.registros.filter(r => r.estado === k).length;
+  const porTipo = S.registros.filter(r => !S.filtroTipo || r.tipo === S.filtroTipo);
+  const selTipo = el("select", { "aria-label": "Tipo de registro", onchange: e => { S.filtroTipo = e.target.value; pintarRegistros(); } },
+    el("option", { value: "" }, "Todos los tipos"), ORDEN_TIPOS.map(k => el("option", { value: k }, TIPOS[k].nombre)));
+  selTipo.value = S.filtroTipo;
+  $("regFiltros").replaceChildren(selTipo, ...FILTROS.map(([k, t]) => {
+    const n = k === "todos" ? porTipo.length : porTipo.filter(r => r.estado === k).length;
     return el("button", { "aria-pressed": S.filtroReg === k ? "true" : "false", onclick: () => { S.filtroReg = k; pintarRegistros(); } }, `${t} (${n})`);
   }));
-  const lista = S.registros.filter(r => S.filtroReg === "todos" || r.estado === S.filtroReg);
+  const lista = porTipo.filter(r => S.filtroReg === "todos" || r.estado === S.filtroReg);
   $("regLista").replaceChildren(lista.length ? el("div", { class: "list" }, lista.map(itemRegistro)) : el("div", { class: "empty" }, "No hay registros aquí."));
   const nPend = S.admin ? S.registros.filter(r => r.estado === "pendiente").length : S.registros.filter(r => r.estado === "correccion").length;
   $("regBadge").hidden = !nPend; $("regBadge").textContent = nPend;
@@ -659,29 +665,33 @@ function pintarRegistros() {
 async function detalleRegistro(id) {
   const r = S.registros.find(x => x.id === id); if (!r) return;
   const T = TIPOS[r.tipo] || { campos: [] }, d = r.datos || {};
-  const filas = [["Lote", `${r.loteNombre} · ${r.ciclo || ""}`], ["Fecha de la labor", fmtFecha(r.fechaHecho)], ["Registrado por", r.autorNombre],
+  const filas = [[r.loteId ? "Lote" : "Destino", r.loteId ? `${r.loteNombre} · ${r.ciclo || ""}` : "Bodega"], ["Fecha", fmtFecha(r.fechaHecho)], ["Registrado por", r.autorNombre],
     ["Registrado el", r.creadoLocal ? new Date(r.creadoLocal).toLocaleString("es-CO") : "—"]];
   if (r.justificacion) filas.push(["Justificación", r.justificacion]);
-  for (const c of T.campos) { if (c.t === "fotos") continue; let v = d[c.k]; if (v == null || v === "") continue; if (typeof v === "boolean") v = v ? "Sí" : "No"; filas.push([c.l, String(v)]); }
-  if (r.tipo === "riego") filas.push(["Tiempo de motobomba", num(d.horas, 2) + " h"]);
-  if (r.tipo === "plaga") filas.push(["Afectación", `${num(d.pct, 1)} % (umbral ${d.umbral} %)`]);
+  for (const c of T.campos) {
+    if (c.t === "fotos") continue; let v = d[c.k];
+    if (c.t === "dosis") v = fmtDosis(v);
+    if (v == null || v === "") continue; if (typeof v === "boolean") v = v ? "Sí" : "No";
+    if (c.t === "num" && /\(\$\)/.test(c.l)) v = pesos(v);
+    filas.push([c.l, String(v)]);
+  }
+  filas.push(...filasCalculadas(r));
   if (r.gps) filas.push(["Ubicación al registrar", `${r.gps.lat.toFixed(5)}, ${r.gps.lng.toFixed(5)} (±${r.gps.prec} m)`]);
   if (r.motivo) filas.push(["Motivo del administrador", r.motivo]);
   const fotosBox = el("div", { class: "fotos" });
   const acciones = el("div", { style: "display:grid;gap:10px" });
   const historial = el("div", { class: "audit" });
-  abrirModal(TIPOS[r.tipo]?.nombre || "Registro", el("span", { class: "pill " + (r._cola ? "cola" : r.estado) }, r._cola ? "En el celular, sin enviar" : ESTADOS[r.estado] + (r.autoaprobado ? " (autoaprobado)" : "")),
+  abrirModal(T.nombre || "Registro", el("span", { class: "pill " + (r._cola ? "cola" : r.estado) }, r._cola ? "En el celular, sin enviar" : ESTADOS[r.estado] + (r.autoaprobado ? " (autoaprobado)" : "")),
     el("dl", { class: "kv" }, filas.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])), fotosBox, acciones, historial);
-  // Fotos
   for (const fid of r.fotos || []) {
     getDoc(doc(db, "fotos", fid)).then(s => { if (s.exists()) { const img = el("img", { src: s.data().data, alt: "Evidencia" }); img.onclick = () => img.classList.toggle("big"); fotosBox.append(img); } }).catch(() => {});
   }
-  // Acciones según rol y estado
   const motivoInp = el("input", { id: "aMotivo", type: "text", placeholder: "Motivo (obligatorio para rechazar, corregir o anular)" });
   const cambiar = (estado, accion, pideMotivo) => () => {
     const motivo = motivoInp.value.trim(); if (pideMotivo && !motivo) { toast("Escribe el motivo", true); motivoInp.focus(); return; }
     updateDoc(doc(db, "registros", r.id), { estado, motivo: motivo || r.motivo || "", revisadoPor: S.user.uid, revisadoEn: serverTimestamp() }).catch(e => toast("No se pudo (" + e.code + ")", true));
     auditar(r.id, accion, { estado: r.estado }, { estado }, motivo); cerrarModal(); toast("Registro " + ESTADOS[estado].toLowerCase());
+    if (estado === "aprobado") aplicarSiembra(r);
   };
   if (S.admin) {
     if (r.estado === "pendiente") acciones.append(el("label", { for: "aMotivo" }, "Revisión", motivoInp), el("div", { class: "row-btns" },
@@ -704,14 +714,31 @@ async function detalleRegistro(id) {
 }
 
 // ---------- Alertas ----------
+const vigente = r => r.estado !== "anulado" && r.estado !== "rechazado";
 function alertas() {
-  const out = [], hace15 = (() => { const t = new Date(); t.setDate(t.getDate() - 15); return fechaLocal(t); })();
-  if (S.admin) { const n = S.registros.filter(r => r.estado === "pendiente").length; if (n) out.push({ t: `${n} registro(s) esperan tu revisión`, go: () => { S.filtroReg = "pendiente"; irA("registros"); pintarRegistros(); } }); }
-  else { const n = S.registros.filter(r => r.estado === "correccion").length; if (n) out.push({ t: `${n} registro(s) para corregir`, go: () => { S.filtroReg = "correccion"; irA("registros"); pintarRegistros(); } }); }
+  const out = [], hoy = fechaLocal(), hace15 = (() => { const t = new Date(); t.setDate(t.getDate() - 15); return fechaLocal(t); })();
+  if (S.admin) {
+    const pend = S.registros.filter(r => r.estado === "pendiente");
+    const viejos = pend.filter(r => r.creadoLocal && (Date.now() - Date.parse(r.creadoLocal)) > 2 * 864e5).length;
+    if (pend.length) out.push({ t: `${pend.length} registro(s) esperan tu revisión${viejos ? ` (${viejos} con más de 2 días)` : ""}`, go: () => { S.filtroReg = "pendiente"; S.filtroTipo = ""; irA("registros"); pintarRegistros(); } });
+  } else { const n = S.registros.filter(r => r.estado === "correccion").length; if (n) out.push({ t: `${n} registro(s) para corregir`, go: () => { S.filtroReg = "correccion"; irA("registros"); pintarRegistros(); } }); }
   for (const r of S.registros) {
-    if (r.estado === "anulado" || r.estado === "rechazado" || r.fechaHecho < hace15) continue;
+    if (!vigente(r)) continue;
+    if (r.tipo === "fumigacion" && r.datos?.carencia > 0 && r.datos.fechaLibre >= hoy)
+      out.push({ t: `${r.loteNombre}: carencia activa hasta el ${fmtFecha(r.datos.fechaLibre)} (${fmtDosis(r.datos.productos)}). No cortar ni dar al ganado.`, go: () => detalleRegistro(r.id) });
+    if (r.fechaHecho < hace15) continue;
     if (r.tipo === "plaga" && r.datos?.sobreUmbral) out.push({ t: `${r.loteNombre}: ${r.datos.plaga} en ${num(r.datos.pct, 1)} % (${fmtFecha(r.fechaHecho)})`, go: () => detalleRegistro(r.id) });
     if (r.tipo === "riego" && r.datos?.llego === false) out.push({ t: `${r.loteNombre}: el agua no llegó al final en la sección ${r.datos.seccion} (${fmtFecha(r.fechaHecho)})`, go: () => detalleRegistro(r.id) });
+  }
+  if (S.admin) {
+    for (const l of lotesVisibles()) {
+      if (!l.fechaSiembra || l.fechaSiembra > hoy) continue;
+      const ult = S.registros.filter(r => r.loteId === l.id && r.tipo === "plaga" && vigente(r)).map(r => r.fechaHecho).sort().pop();
+      const dias = ult ? diasEntre(ult, hoy) : null;
+      if (dias == null || dias > 4) out.push({ t: `${l.nombre}: monitoreo de plagas atrasado (${ult ? `último hace ${dias} días` : "ninguno desde la siembra"}; va cada 4 días)`, go: () => formRegistro("plaga", l.id) });
+    }
+    const inv = inventario(S.registros.filter(r => r.estado === "aprobado"), catActual());
+    for (const f of Object.values(inv)) if (f.bajo) out.push({ t: `Bodega: ${f.producto} por debajo del mínimo (quedan ${num(f.saldo, 1)} ${f.base})`, go: () => irA("panel") });
   }
   if (S.pendientesSync) out.unshift({ t: `${S.pendientesSync} registro(s) guardados en el celular, sin enviar`, go: () => {} });
   return out;
@@ -724,30 +751,79 @@ $("bAlertas").addEventListener("click", () => {
 
 // ---------- Panel ----------
 $("panelLote").addEventListener("change", pintarPanel);
+$("panelCiclo").addEventListener("change", pintarPanel);
+const millones = v => !v ? "$0" : Math.abs(v) >= 1e6 ? "$" + num(v / 1e6, 1) + " M" : "$" + num(v / 1e3, 0) + " mil";
 function pintarPanel() {
   if (!S.admin) return;
-  const sel = $("panelLote"), prev = sel.value;
+  const sel = $("panelLote"), selC = $("panelCiclo"), prev = sel.value, prevC = selC.value, cat = catActual();
   sel.replaceChildren(el("option", { value: "" }, "Todos los lotes"), ...S.lotes.map(l => el("option", { value: l.id }, l.nombre))); sel.value = prev;
-  const ap = S.registros.filter(r => r.estado === "aprobado" && (!sel.value || r.loteId === sel.value));
-  const riegos = ap.filter(r => r.tipo === "riego"), ferts = ap.filter(r => r.tipo === "fertilizacion"), plagas = ap.filter(r => r.tipo === "plaga");
-  const horas = riegos.reduce((s, r) => s + (r.datos?.horas || 0), 0), gal = riegos.reduce((s, r) => s + (r.datos?.galones || 0), 0);
-  const area = S.lotes.filter(l => !l.archivado && (!sel.value || l.id === sel.value)).reduce((s, l) => s + (l.area_ha || 0), 0);
-  const sobre = plagas.filter(r => r.datos?.sobreUmbral).length;
-  const pend = S.registros.filter(r => r.estado === "pendiente").length;
+  const ciclos = [...new Set(S.registros.map(r => r.ciclo).filter(Boolean))];
+  selC.replaceChildren(el("option", { value: "" }, "Todos los ciclos"), ...ciclos.map(c => el("option", { value: c }, c))); selC.value = ciclos.includes(prevC) ? prevC : "";
+  const todosAp = S.registros.filter(r => r.estado === "aprobado");
+  const ap = todosAp.filter(r => r.tipo !== "compra" && (!sel.value || r.loteId === sel.value) && (!selC.value || r.ciclo === selC.value));
+  const de = t => ap.filter(r => r.tipo === t), suma = (rs, k) => rs.reduce((s, r) => s + (Number(r.datos?.[k]) || 0), 0);
+  const inv = inventario(todosAp, cat), pGal = precioGalon(todosAp, cat), cs = costos(ap, inv, pGal);
+  const areaLotes = S.lotes.filter(l => !l.archivado && (!sel.value || l.id === sel.value)).reduce((s, l) => s + (l.area_ha || 0), 0);
+  const areaSemb = suma(de("siembra"), "area") || areaLotes, areaCos = suma(de("cosecha"), "area"), tSilo = suma(de("cosecha"), "tSilo");
+  const horas = suma(de("riego"), "horas");
+  const sobre = de("plaga").filter(r => r.datos?.sobreUmbral).length, pend = S.registros.filter(r => r.estado === "pendiente").length;
   const kpi = (v, t, alerta) => el("div", { class: "kpi" + (alerta ? " alerta" : "") }, el("b", {}, v), el("span", {}, t));
-  $("kpis").replaceChildren(kpi(num(area, 2), "Hectáreas sembradas"), kpi(num(horas, 1), "Horas de motobomba"), kpi(num(gal, 1), "Galones de gasolina (riego)"),
-    kpi(ferts.length, "Fertilizaciones"), kpi(plagas.length, "Monitoreos de plagas"), kpi(sobre, "Monitoreos sobre el umbral", sobre > 0), kpi(pend, "Por revisar", pend > 0));
+  $("kpis").replaceChildren(
+    kpi(num(areaSemb, 2), "Hectáreas sembradas"), kpi(num(areaCos, 2), "Hectáreas cosechadas"),
+    kpi(millones(cs.total), "Costo acumulado"), kpi(areaSemb ? millones(cs.total / areaSemb) : "—", "Costo por hectárea"),
+    kpi(num(tSilo, 1), "Toneladas de silo"), kpi(tSilo ? millones(cs.total / tSilo) : "—", "Costo por tonelada de silo"),
+    kpi(num(horas, 1), "Horas de motobomba"), kpi(num(cs.galRiego + cs.galComb, 1), "Galones de combustible"),
+    kpi(sobre, "Monitoreos sobre el umbral", sobre > 0), kpi(pend, "Por revisar", pend > 0));
+  const tabla = (cab, filas) => el("table", { class: "t" }, el("thead", {}, el("tr", {}, cab.map((c, i) => el("th", { class: i ? "n" : "" }, c)))),
+    el("tbody", {}, filas.map(f => el("tr", { class: f.cls || "" }, f.c.map((x, i) => el("td", { class: i ? "n" : "" }, x))))));
+  // Costos por rubro
+  const rubros = [["Insumos aplicados", cs.insumos], ["Labores (jornales y tractor)", cs.labores], ["Combustible de equipos", cs.combustible], [`Gasolina de riego (${num(cs.galRiego, 1)} gal)`, cs.gasolinaRiego]];
+  const cardCostos = el("div", { class: "card" }, el("h3", {}, "Costos por rubro"),
+    tabla(["Rubro", "Valor"], [...rubros.map(([a, b]) => ({ c: [a, pesos(b)] })), { c: [el("b", {}, "Total"), el("b", {}, pesos(cs.total))] }, { c: ["Por hectárea sembrada", areaSemb ? pesos(cs.total / areaSemb) : "—"] }]),
+    cs.sinPrecio.size ? el("p", { class: "hint" }, `Sin precio todavía: ${[...cs.sinPrecio].join(", ")}. Registra la compra${cs.sinPrecio.has("gasolina de riego") ? " (o el precio del galón en Catálogos)" : ""} para que sumen.`) : null,
+    el("p", { class: "hint" }, "Los insumos se valoran al costo promedio de sus compras. Falta sumar lo que no pasa por la app (análisis de suelo, asistencia técnica, cerca); eso sigue en la plantilla."));
+  // Inventario
+  const filasInv = Object.values(inv).sort((a, b) => a.producto.localeCompare(b.producto)).map(f => ({ cls: f.bajo || f.saldo < 0 ? "fila-alerta" : "",
+    c: [f.producto + (f.mezcla ? " ⚠ unidades mezcladas" : ""), `${num(f.comprado, 1)} ${f.base}`, `${num(f.aplicado, 1)} ${f.base}`, `${num(f.saldo, 1)} ${f.base}`, f.costoProm != null ? pesos(f.costoProm) : "—"] }));
+  const cardInv = el("div", { class: "card" }, el("h3", {}, "Bodega e inventario"),
+    filasInv.length ? el("div", { class: "scroll-x" }, tabla(["Producto", "Comprado", "Aplicado", "Saldo", "$ / unidad"], filasInv)) : el("p", { class: "hint" }, "Aún no hay compras ni aplicaciones aprobadas."),
+    el("p", { class: "hint" }, "Saldo negativo = se aplicó más de lo que se registró como comprado."),
+    el("button", { class: "btn", onclick: () => formRegistro("compra", null) }, "+ Registrar compra"));
+  // Fertilizante por hectárea
   const porProd = {};
-  for (const r of ferts) { const k = `${r.datos.producto} (${r.datos.unidad})`; porProd[k] = (porProd[k] || 0) + (r.datos.cantidad || 0); }
-  $("panelExtra").replaceChildren(
-    el("div", { class: "card" }, el("h3", {}, "Fertilizante aplicado"), Object.keys(porProd).length ? el("table", { class: "t" }, el("tbody", {}, Object.entries(porProd).map(([k, v]) => el("tr", {}, el("td", {}, k), el("td", { class: "n" }, num(v, 1)))))) : el("p", { class: "hint" }, "Sin fertilizaciones aprobadas.")),
-    el("div", { class: "card" }, el("h3", {}, "Exportar"), el("p", { class: "hint" }, "Registros aprobados en CSV, para la plantilla de Excel."), el("button", { class: "btn", onclick: exportarCsv }, "Descargar CSV")),
-    el("p", { class: "hint" }, "Solo cuentan los registros aprobados. Costos, rendimiento y más indicadores llegan en la entrega 6."));
+  for (const r of de("fertilizacion")) { const k = r.datos.producto, b = r.datos.base || "kg"; porProd[k] ||= { b, cant: 0 }; porProd[k].cant += r.datos.cantBase ?? consumos(r)[0].cant; }
+  const cardFert = el("div", { class: "card" }, el("h3", {}, "Fertilizante aplicado"),
+    Object.keys(porProd).length ? tabla(["Producto", "Total", "Por ha"], Object.entries(porProd).map(([k, v]) => ({ c: [k, `${num(v.cant, 1)} ${v.b}`, areaSemb ? `${num(v.cant / areaSemb, 1)} ${v.b}/ha` : "—"] }))) : el("p", { class: "hint" }, "Sin fertilizaciones aprobadas."));
+  // Aplicaciones fitosanitarias
+  const fums = de("fumigacion").sort((a, b) => b.fechaHecho.localeCompare(a.fechaHecho));
+  const cardFum = el("div", { class: "card" }, el("h3", {}, "Aplicaciones fitosanitarias"),
+    fums.length ? el("div", { class: "list" }, fums.map(itemRegistro)) : el("p", { class: "hint" }, "Sin fumigaciones aprobadas."));
+  // Incidencia de plagas
+  const porPlaga = {};
+  for (const r of de("plaga").sort((a, b) => a.fechaHecho.localeCompare(b.fechaHecho))) { const p = porPlaga[r.datos.plaga] ||= { n: 0, max: 0 }; p.n++; p.max = Math.max(p.max, r.datos.pct || 0); p.ult = r; }
+  const cardPlagas = el("div", { class: "card" }, el("h3", {}, "Incidencia de plagas"),
+    Object.keys(porPlaga).length ? tabla(["Plaga", "Último", "Máximo", "Umbral"], Object.entries(porPlaga).map(([k, p]) => ({ cls: p.ult.datos.sobreUmbral ? "fila-alerta" : "",
+      c: [`${k} (${p.n})`, `${num(p.ult.datos.pct, 1)} % · ${fmtFecha(p.ult.fechaHecho)}`, num(p.max, 1) + " %", p.ult.datos.umbral + " %"] }))) : el("p", { class: "hint" }, "Sin monitoreos aprobados."));
+  $("panelExtra").replaceChildren(cardCostos, cardInv, cardFert, cardFum, cardPlagas,
+    el("div", { class: "card" }, el("h3", {}, "Exportar"), el("p", { class: "hint" }, "Todos los registros aprobados en CSV (se abre en Excel), con el costo de cada uno."), el("button", { class: "btn", onclick: exportarCsv }, "Descargar CSV")),
+    el("p", { class: "hint" }, "Solo cuentan los registros aprobados."));
 }
 function exportarCsv() {
-  const ap = S.registros.filter(r => r.estado === "aprobado");
-  const cols = ["fechaHecho", "tipo", "loteNombre", "ciclo", "autorNombre", "resumen", "seccion", "horas", "galones", "producto", "cantidad", "unidad", "area", "plaga", "revisadas", "afectadas", "pct", "obs"];
-  const filas = ap.map(r => cols.map(c => csvEscape(c === "resumen" ? resumen(r) : (r[c] ?? r.datos?.[c] ?? ""))).join(";"));
+  const todosAp = S.registros.filter(r => r.estado === "aprobado"), cat = catActual();
+  const inv = inventario(todosAp, cat), pGal = precioGalon(todosAp, cat);
+  const claves = []; for (const r of todosAp) for (const k of Object.keys(r.datos || {})) if (!claves.includes(k) && k !== "sinCarencia") claves.push(k);
+  const cols = ["fechaHecho", "tipo", "loteNombre", "ciclo", "autorNombre", "resumen", "costo", ...claves];
+  const valor = (r, c) => {
+    if (c === "resumen") return resumen(r);
+    if (c === "tipo") return TIPOS[r.tipo]?.nombre || r.tipo;
+    if (c === "costo") return r.tipo === "compra" ? (r.datos?.valor ?? "") : Math.round(costos([r], inv, pGal).total);
+    const v = r[c] ?? r.datos?.[c];
+    if (Array.isArray(v)) return c === "productos" ? fmtDosis(v) : v.join(" ");
+    if (typeof v === "number") return String(v).replace(".", ",");
+    if (typeof v === "boolean") return v ? "Sí" : "No";
+    return v ?? "";
+  };
+  const filas = todosAp.map(r => cols.map(c => csvEscape(valor(r, c))).join(";"));
   descargar(`registros_aprobados_${fechaLocal()}.csv`, "﻿" + cols.join(";") + "\n" + filas.join("\n"), "text/csv");
 }
 
@@ -759,7 +835,7 @@ function pintarYo() {
   $("yoAdmin").replaceChildren(
     el("div", { class: "card" }, el("h3", {}, "Lotes"), el("div", { class: "row-btns" }, el("button", { class: "btn", onclick: listaLotes }, "Ver lotes"), el("button", { class: "btn primary", onclick: () => formLote(null) }, "+ Nuevo lote"))),
     el("div", { class: "card" }, el("h3", {}, "Usuarios"), el("div", { class: "row-btns" }, el("button", { class: "btn", onclick: listaUsuarios }, "Ver usuarios"), el("button", { class: "btn primary", onclick: formUsuario }, "+ Trabajador"))),
-    el("div", { class: "card" }, el("h3", {}, "Catálogos"), el("p", { class: "hint" }, "Productos, motobombas y plagas con su umbral."), el("button", { class: "btn", onclick: formCatalogos }, "Editar catálogos")));
+    el("div", { class: "card" }, el("h3", {}, "Catálogos"), el("p", { class: "hint" }, "Productos con tipo, unidad, carencia y mínimo en bodega; equipos; plagas con su umbral; precio del galón."), el("button", { class: "btn", onclick: formCatalogos }, "Editar catálogos")));
 }
 async function listaUsuarios() {
   try {
@@ -787,14 +863,23 @@ function formUsuario() {
     } }, "Crear usuario"));
 }
 function formCatalogos() {
-  const cat = S.catalogos || CAT_DEFECTO;
-  const ta = (id, label, val) => { const t = el("textarea", { id, rows: 5 }); t.value = val; return el("label", { for: id }, label, t); };
-  abrirModal("Catálogos", ta("cProd", "Productos (uno por línea)", (cat.productos || []).join("\n")), ta("cMoto", "Motobombas y equipos (uno por línea)", (cat.motobombas || []).join("\n")),
-    ta("cPlag", "Plagas: nombre; umbral % (una por línea)", (cat.plagas || []).map(p => `${p.nombre}; ${p.umbral}`).join("\n")),
+  const cat = catActual();
+  const ta = (id, label, val, rows = 6) => { const t = el("textarea", { id, rows, spellcheck: "false" }); t.value = val; return el("label", { for: id }, label, t); };
+  const pg = el("input", { id: "cGal", type: "number", inputmode: "numeric", step: "100", min: "0" }); pg.value = cat.precioGalon ?? "";
+  abrirModal("Catálogos",
+    ta("cProd", "Productos: nombre; tipo; unidad (kg o L); carencia en días; mínimo en bodega", cat.productos.map(p => [p.nombre, p.tipo, p.unidad, p.carencia ?? "", p.min ?? ""].join("; ").replace(/(; )+$/, "")).join("\n"), 9),
+    el("p", { class: "hint" }, `Tipos: ${TIPOS_PROD.join(", ")}. La carencia sale de la etiqueta y es obligatoria en herbicidas, insecticidas y fungicidas. Ejemplo: «Atrazina 90 WG; Herbicida; kg; 30; 2».`),
+    ta("cEq", "Equipos y motobombas (uno por línea)", cat.equipos.join("\n"), 4),
+    ta("cPlag", "Plagas: nombre; umbral % (una por línea)", cat.plagas.map(p => `${p.nombre}; ${p.umbral}`).join("\n"), 5),
+    el("label", { for: "cGal" }, "Precio de referencia del galón de gasolina ($), mientras no haya registros de combustible", pg),
     el("button", { class: "btn primary", onclick: () => {
       const lineas = id => $(id).value.split("\n").map(s => s.trim()).filter(Boolean);
+      const nOrNull = x => x == null || String(x).trim() === "" || isNaN(parseFloat(String(x).replace(",", "."))) ? null : parseFloat(String(x).replace(",", "."));
+      const productos = lineas("cProd").map(s => { const [n, t = "", u = "", c, m] = s.split(";").map(x => x.trim());
+        const tipo = TIPOS_PROD.find(x => x.toLowerCase() === t.toLowerCase()) || "Otro";
+        return { nombre: n, tipo, unidad: /^l/i.test(u) ? "L" : "kg", carencia: nOrNull(c), min: nOrNull(m) }; });
       const plagas = lineas("cPlag").map(s => { const [nombre, u] = s.split(";"); return { nombre: nombre.trim(), umbral: parseFloat(u) || 20 }; });
-      setDoc(doc(db, "config", "catalogos"), { productos: lineas("cProd"), motobombas: lineas("cMoto"), plagas }).catch(e => toast("No se guardó: " + e.code, true));
+      setDoc(doc(db, "config", "catalogos"), { productos, equipos: lineas("cEq"), plagas, precioGalon: nOrNull(pg.value) }).catch(e => toast("No se guardó: " + e.code, true));
       cerrarModal(); toast("Catálogos guardados");
     } }, "Guardar"));
 }

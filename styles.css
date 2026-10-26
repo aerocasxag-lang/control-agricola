@@ -158,3 +158,22 @@ table.t td.n{text-align:right;font-variant-numeric:tabular-nums}
 .leyenda .sw{width:14px;height:14px;border-radius:3px;display:inline-block}
 .pixelado{image-rendering:pixelated;image-rendering:crisp-edges}
 .modal-body h3{font-size:1.15rem;margin-top:4px}
+
+/* v0.4: módulos, avisos, inventario */
+.filtros-panel{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:62%}
+.page-head .filtros-panel select{max-width:none;flex:1 1 130px}
+.chips select{width:auto;flex:none;padding:6px 10px;border-radius:99px;font-size:.9rem}
+.avisos{display:grid;gap:8px} .avisos:empty{display:none}
+.aviso{border-radius:10px;padding:10px 12px;font-size:.92rem;border:1.5px solid}
+.aviso.warn{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
+.aviso.crit{background:var(--crit-bg);border-color:var(--crit);color:var(--crit)}
+.calc[hidden]{display:none}
+.dosis{display:grid;gap:8px}
+.dosis-fila{display:grid;grid-template-columns:minmax(0,1fr) 84px 92px 40px;gap:6px;align-items:center}
+.dosis-fila .btn.small{padding:8px 0}
+@media (max-width:420px){.dosis-fila{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 40px}.dosis-fila select:first-child{grid-column:1/-1}}
+.scroll-x{overflow-x:auto}
+table.t th{font-size:.78rem;color:var(--muted);font-weight:600}
+table.t th.n{text-align:right}
+table.t tr.fila-alerta td{color:var(--crit)}
+.kpi b{overflow-wrap:anywhere}

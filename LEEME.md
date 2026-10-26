@@ -1,6 +1,6 @@
 # Control Agrícola · AeroCAS — cómo ponerla a funcionar
 
-Versión 0.3 (25-oct-2026): todo lo de la 0.2 más capas de mapa (satélite, satélite con nombres, topográfico, calles), guardar zonas para usar sin señal, ortomosaico propio sobre el lote, mapa de vigor y borde del lote dibujado o caminado con GPS.
+Versión 0.4 (25-oct-2026): todo lo de la 0.3 más los registros de siembra, fumigación, inspección, labores, combustible, corte/cosecha y compras; inventario de bodega, costos por lote y por tonelada de silo, y alertas de carencia, monitoreo atrasado y saldo bajo.
 
 ## Paso 1 · Pegar las reglas de seguridad (5 min)
 
@@ -40,7 +40,7 @@ Cuando haya una versión nueva, sube en GitHub los archivos que cambien (**Add f
 
 | Ya funciona | Llega después |
 | --- | --- |
-| Mapa con lotes, ficha, medir, GPS, satélite | Ortomosaico propio de fondo y mapa de vigor (entrega 3) |
-| Riego, fertilización, plagas con fotos | Siembra, fumigación, combustible, inspección, labores, cosecha, inventario (entrega 5) |
-| Aprobar, rechazar, pedir corrección, anular, historial | Costos, rendimiento y alertas completas (entrega 6) |
-| Usuarios, catálogos, CSV de aprobados | Informes PDF y Excel |
+| Mapa con lotes, ficha, medir, GPS, satélite, ortomosaico y vigor | Comparar el vigor entre dos vuelos |
+| Los 10 registros de campo, con fotos, sin señal | Recordatorios del cultivo por días desde la siembra |
+| Aprobar, rechazar, pedir corrección, anular, historial | Rendimiento estimado desde la inspección |
+| Inventario, costos por lote, alertas, CSV con costo | Informes PDF y Excel con formato |
