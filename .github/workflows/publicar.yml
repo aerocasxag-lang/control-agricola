@@ -1,0 +1,28 @@
+# Publica la app en Firebase Hosting cada vez que se sube un cambio a main.
+# Necesita el secreto FIREBASE_SERVICE_ACCOUNT (clave de una cuenta de servicio con el rol «Administrador de Firebase Hosting»).
+name: Publicar en Firebase Hosting
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Revisar que exista la clave
+        id: clave
+        env:
+          CLAVE: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$CLAVE" ]; then echo "Falta el secreto FIREBASE_SERVICE_ACCOUNT; no se publica todavía."; echo "hay=no" >> "$GITHUB_OUTPUT"; else echo "hay=si" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@v4
+        if: steps.clave.outputs.hay == 'si'
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        if: steps.clave.outputs.hay == 'si'
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          channelId: live
+          projectId: control-agricola-7d2e0
