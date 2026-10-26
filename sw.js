@@ -1,5 +1,5 @@
 // Service worker: guarda la app en el celular para abrirla sin señal.
-const VERSION = "agricola-v9";
+const VERSION = "agricola-v10";
 const APP = ["./", "index.html", "styles.css", "app.js", "util.js", "modulos.js", "mapas.js", "orto.js", "dibujo.js", "manifest.webmanifest", "icon.svg"];
 const LIBRERIAS = [
   "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css",
@@ -54,7 +54,9 @@ self.addEventListener("fetch", e => {
   if (url.origin === location.origin || /gstatic\.com$|cdnjs\.cloudflare\.com$|cdn\.jsdelivr\.net$|fonts\.googleapis\.com$/.test(url.hostname)) {
     e.respondWith((async () => {
       const c = await caches.open(VERSION);
-      const guardado = await c.match(req, { ignoreSearch: url.origin === location.origin });
+      let guardado = await c.match(req, { ignoreSearch: url.origin === location.origin });
+      // Una copia «opaca» (sin CORS) no sirve para una petición con verificación de integridad: se descarta.
+      if (guardado && guardado.type === "opaque" && req.mode === "cors") { await c.delete(req); guardado = null; }
       const red = (url.origin === location.origin ? fetch(req.url, { cache: "no-cache" }) : fetch(req)).then(r => { if (r.ok || r.type === "opaque") c.put(req, r.clone()); return r; }).catch(() => null);
       return guardado || (await red) || (req.mode === "navigate" ? c.match("index.html") : Response.error());
     })());

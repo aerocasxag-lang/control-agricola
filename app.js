@@ -12,7 +12,12 @@ import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, v
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir } from "./orto.js";
 
-const VERSION = "0.7 · 25-oct-2026";
+const VERSION = "0.7.1 · 26-oct-2026";
+// Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
+if (typeof L === "undefined") {
+  let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
+  if (!ya) location.reload();
+} else { try { sessionStorage.removeItem("recargaLibs"); } catch (e) {} }
 const ADMIN_UID = "FsBVYYQXT4YMtHDgcgsgoEH9N1m1";
 const firebaseConfig = {
   apiKey: "AIzaSyCpf4LRwovuqNdGG5BENvDBS7OHwbIoEQw",
