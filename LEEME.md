@@ -1,6 +1,6 @@
 # Control Agrícola · AeroCAS — cómo ponerla a funcionar
 
-Versión 0.4 (25-oct-2026): todo lo de la 0.3 más los registros de siembra, fumigación, inspección, labores, combustible, corte/cosecha y compras; inventario de bodega, costos por lote y por tonelada de silo, y alertas de carencia, monitoreo atrasado y saldo bajo.
+Versión 0.6 (25-oct-2026): todo lo de la 0.5 (motobomba Barnes, nota del tanque en el riego, costo de cada fumigación) más la pestaña Gastos con el total gastado en el proyecto y un registro de gasto libre (tubos, llaves, alambre, transporte, servicios), y un micrófono para dictar notas y descripciones.
 
 ## Paso 1 · Pegar las reglas de seguridad (5 min)
 

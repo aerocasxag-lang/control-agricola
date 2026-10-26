@@ -8,11 +8,11 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { areaHa, parseKml, centroide, fechaLocal, diasEntre, comprimirFoto, csvEscape } from "./util.js";
 import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, vistaCalculo, revisar, resumen, filasCalculadas, fmtDosis,
-  inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS } from "./modulos.js";
+  inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO } from "./modulos.js";
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir } from "./orto.js";
 
-const VERSION = "0.4 · 25-oct-2026";
+const VERSION = "0.6 · 25-oct-2026";
 const ADMIN_UID = "FsBVYYQXT4YMtHDgcgsgoEH9N1m1";
 const firebaseConfig = {
   apiKey: "AIzaSyCpf4LRwovuqNdGG5BENvDBS7OHwbIoEQw",
@@ -107,13 +107,13 @@ onAuthStateChanged(auth, async user => {
     if (S.admin && !snap.exists() && !snap.metadata.fromCache) {
       setDoc(doc(db, "usuarios", user.uid), { nombre: "Jorge Andrés Herrera", correo: user.email, rol: "admin", activo: true, creado: serverTimestamp() });
     }
-    $("tabPanel").hidden = !S.admin;
+    $("tabPanel").hidden = !S.admin; $("tabGastos").hidden = !S.admin;
     pintarYo(); escucharRegistros();
   }, () => {}));
   // Lotes
   S.unsubs.push(onSnapshot(collection(db, "lotes"), snap => {
     S.lotes = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
-    pintarLotes(); pintarPanel();
+    pintarLotes(); pintarPanel(); pintarGastos();
     if (S.loteSel) { const l = lotePorId(S.loteSel); if (l) pintarFicha(l); else cerrarFicha(); }
   }, () => {}));
   // Ortomosaicos (solo la ficha; la imagen se carga aparte)
@@ -140,7 +140,7 @@ function escucharRegistros() {
     S.registros = snap.docs.map(d => ({ id: d.id, _cola: d.metadata.hasPendingWrites, ...d.data() }))
       .sort((a, b) => (b.fechaHecho || "").localeCompare(a.fechaHecho || "") || (b.creadoLocal || "").localeCompare(a.creadoLocal || ""));
     S.pendientesSync = S.registros.filter(r => r._cola).length;
-    pintarRed(); pintarRegistros(); pintarPanel(); pintarAlertas();
+    pintarRed(); pintarRegistros(); pintarPanel(); pintarGastos(); pintarAlertas();
     if (S.loteSel && S.seg === "reg") pintarSeg();
   }, err => toast("No se pudieron leer los registros (" + err.code + ")", true));
   S.unsubs.push(() => { unsubReg && unsubReg(); unsubReg = null; regModo = null; });
@@ -150,7 +150,7 @@ function escucharRegistros() {
 document.querySelectorAll("#tabbar button").forEach(b => b.addEventListener("click", () => irA(b.dataset.v)));
 function irA(v) {
   document.querySelectorAll("#tabbar button").forEach(x => x.setAttribute("aria-selected", x.dataset.v === v ? "true" : "false"));
-  ["mapa", "registros", "panel", "yo"].forEach(x => $("v-" + x).hidden = x !== v);
+  ["mapa", "registros", "gastos", "panel", "yo"].forEach(x => $("v-" + x).hidden = x !== v);
   if (v === "mapa" && mapa) setTimeout(() => mapa.invalidateSize(), 50);
 }
 
@@ -537,13 +537,19 @@ function formRegistro(tipo, loteId, previo = null) {
     const id = "c_" + c.k; let ctrl;
     const etiqueta = c.l + (c.req ? " *" : "");
     if (c.t === "texto") { ctrl = el("textarea", { id, rows: 3 }); ctrl.value = val[c.k] ?? ""; }
-    else if (c.t === "txt") { ctrl = el("input", { id, type: "text" }); ctrl.value = val[c.k] ?? ""; }
+    else if (c.t === "txt") {
+      ctrl = el("input", { id, type: "text", placeholder: c.ph || null, list: c.sug ? id + "_sug" : null }); ctrl.value = val[c.k] ?? "";
+      if (c.sug) partes.push(el("datalist", { id: id + "_sug" }, c.sug.map(o => el("option", { value: o }))));
+    }
     else if (c.t === "alturas") { ctrl = el("input", { id, type: "text", inputmode: "decimal", placeholder: "Ej.: 45 52 48 50 47 …" }); ctrl.value = val[c.k] ?? ""; }
     else if (c.t === "num") { ctrl = el("input", { id, type: "number", inputmode: "decimal", step: c.step || "1", min: "0" }); ctrl.value = val[c.k] ?? c.def ?? ""; }
     else if (c.t === "time") { ctrl = el("input", { id, type: "time" }); ctrl.value = val[c.k] ?? ""; }
     else if (c.t === "sel") { ctrl = el("select", { id }, c.ops.map(o => el("option", { value: o }, o))); if (val[c.k]) ctrl.value = val[c.k]; }
     else if (c.t === "cat") ctrl = selectOtro(id, cat[c.cat] || [], val[c.k]);
-    else if (c.t === "prod") ctrl = selectOtro(id, prodsTipo(cat, c.tipos), val[c.k], "Nombre del producto (pídele al administrador que lo agregue al catálogo)");
+    else if (c.t === "prod") {
+      ctrl = selectOtro(id, [...prodsTipo(cat, c.tipos), ...(c.conEquipos ? cat.equipos : [])], val[c.k], "Nombre del producto (pídele al administrador que lo agregue al catálogo)");
+      if (c.conEquipos) ctrl.addEventListener("change", () => { const u = $("c_unidad"); if (u && cat.equipos.includes(ctrl.value)) { u.value = "unidad"; $("c_cantidad").value ||= 1; } });
+    }
     else if (c.t === "plaga") { ctrl = el("select", { id }, cat.plagas.map(p => el("option", { value: p.nombre }, p.nombre))); if (val[c.k]) ctrl.value = val[c.k]; }
     else if (c.t === "seccion") { const n = l?.secciones || 0; ctrl = el("select", { id }, el("option", { value: "Todo el lote" }, "Todo el lote"), Array.from({ length: n }, (_, i) => el("option", { value: String(i + 1) }, "Sección " + (i + 1)))); if (val[c.k]) ctrl.value = val[c.k]; }
     else if (c.t === "dosis") { ctrl = ctrlDosis(id, c, cat, val[c.k]); partes.push(el("div", { style: "display:grid;gap:6px" }, el("span", { class: "hint" }, etiqueta), ctrl)); ctrls[c.k] = ctrl; continue; }
@@ -566,7 +572,9 @@ function formRegistro(tipo, loteId, previo = null) {
       partes.push(el("label", { for: id }, c.l + " (máx. 3, se toman con la cámara)", fi), prev); ctrls[c.k] = { fotos }; continue;
     }
     ctrls[c.k] = ctrl;
-    partes.push(el("label", { for: id }, etiqueta, ctrl));
+    if ((c.t === "texto" || c.t === "txt") && Dictado) { partes.push(el("div", { class: "con-mic" }, el("label", { for: id }, etiqueta, ctrl), botonDictar(ctrl))); }
+    else partes.push(el("label", { for: id }, etiqueta, ctrl));
+    if (c.ayuda) partes.push(el("p", { class: "hint", style: "margin-top:-8px" }, c.ayuda));
   }
   partes.push(calc, avisosBox);
   const leer = () => {
@@ -597,6 +605,24 @@ function formRegistro(tipo, loteId, previo = null) {
   });
   abrirModal((previo ? "Corregir · " : "") + T.nombre, el("p", { class: "hint" }, l ? `${l.nombre} · ${l.ciclo || ""}` : "Bodega (no va a un lote)"), cont, bGuardar);
   pintarCalc();
+}
+
+// Dictado por voz (Chrome en Android y en el computador; necesita señal).
+const Dictado = window.SpeechRecognition || window.webkitSpeechRecognition;
+function botonDictar(campo) {
+  const b = el("button", { type: "button", class: "mic", "aria-label": "Dictar con la voz", title: "Dictar con la voz" }, "🎤");
+  let rec = null;
+  b.addEventListener("click", () => {
+    if (rec) { rec.stop(); return; }
+    if (!navigator.onLine) { toast("El dictado necesita señal. Escribe la nota o díctala con el teclado del celular.", true); return; }
+    rec = new Dictado(); rec.lang = "es-CO"; rec.interimResults = false; rec.continuous = false;
+    const antes = campo.value;
+    rec.onresult = e => { const t = [...e.results].map(r => r[0].transcript).join(" ").trim(); campo.value = (antes ? antes + " " : "") + t; campo.dispatchEvent(new Event("input", { bubbles: true })); };
+    rec.onerror = e => toast(e.error === "not-allowed" ? "Permite el micrófono para dictar." : "No se entendió. Intenta otra vez.", true);
+    rec.onend = () => { rec = null; b.classList.remove("on"); };
+    b.classList.add("on"); rec.start();
+  });
+  return b;
 }
 
 // El registro de siembra aprobado pone la fecha de siembra y el área sembrada en el lote.
@@ -760,8 +786,11 @@ function pintarPanel() {
   const ciclos = [...new Set(S.registros.map(r => r.ciclo).filter(Boolean))];
   selC.replaceChildren(el("option", { value: "" }, "Todos los ciclos"), ...ciclos.map(c => el("option", { value: c }, c))); selC.value = ciclos.includes(prevC) ? prevC : "";
   const todosAp = S.registros.filter(r => r.estado === "aprobado");
-  const ap = todosAp.filter(r => r.tipo !== "compra" && (!sel.value || r.loteId === sel.value) && (!selC.value || r.ciclo === selC.value));
-  const de = t => ap.filter(r => r.tipo === t), suma = (rs, k) => rs.reduce((s, r) => s + (Number(r.datos?.[k]) || 0), 0);
+  const ap = todosAp.filter(r => r.tipo !== "compra" && r.tipo !== "gasto" && (!sel.value || r.loteId === sel.value) && (!selC.value || r.ciclo === selC.value));
+  // Equipos (motobomba, etc.) son del proyecto: cuentan sin filtro de ciclo y cuando se ven todos los lotes o hay uno solo.
+  const unLote = S.lotes.filter(l => !l.archivado).length <= 1, conEquipos = !selC.value && (!sel.value || unLote);
+  if (conEquipos) ap.push(...todosAp.filter(r => (r.tipo === "compra" && esEquipo(r.datos)) || r.tipo === "gasto"));
+  const de = t => ap.filter(r => r.tipo === t && r.tipo !== "compra" && r.tipo !== "gasto"), suma = (rs, k) => rs.reduce((s, r) => s + (Number(r.datos?.[k]) || 0), 0);
   const inv = inventario(todosAp, cat), pGal = precioGalon(todosAp, cat), cs = costos(ap, inv, pGal);
   const areaLotes = S.lotes.filter(l => !l.archivado && (!sel.value || l.id === sel.value)).reduce((s, l) => s + (l.area_ha || 0), 0);
   const areaSemb = suma(de("siembra"), "area") || areaLotes, areaCos = suma(de("cosecha"), "area"), tSilo = suma(de("cosecha"), "tSilo");
@@ -777,17 +806,19 @@ function pintarPanel() {
   const tabla = (cab, filas) => el("table", { class: "t" }, el("thead", {}, el("tr", {}, cab.map((c, i) => el("th", { class: i ? "n" : "" }, c)))),
     el("tbody", {}, filas.map(f => el("tr", { class: f.cls || "" }, f.c.map((x, i) => el("td", { class: i ? "n" : "" }, x))))));
   // Costos por rubro
-  const rubros = [["Insumos aplicados", cs.insumos], ["Labores (jornales y tractor)", cs.labores], ["Combustible de equipos", cs.combustible], [`Gasolina de riego (${num(cs.galRiego, 1)} gal)`, cs.gasolinaRiego]];
+  const rubros = [["Insumos aplicados", cs.insumos], ["Labores (jornales y tractor)", cs.labores], ["Aplicaciones (gasolina del dron y la camioneta, o fumigadores)", cs.aplicaciones],
+    ["Combustible de equipos", cs.combustible], [`Gasolina de riego (${num(cs.galRiego, 1)} gal)`, cs.gasolinaRiego], [conEquipos ? "Equipos y herramientas (motobomba, etc.)" : "Equipos (solo sin filtro de ciclo)", cs.equipos],
+    [conEquipos ? "Gastos del proyecto (tubos, cerca, transporte…)" : "Gastos del proyecto (solo sin filtro de ciclo)", cs.gastos]];
   const cardCostos = el("div", { class: "card" }, el("h3", {}, "Costos por rubro"),
     tabla(["Rubro", "Valor"], [...rubros.map(([a, b]) => ({ c: [a, pesos(b)] })), { c: [el("b", {}, "Total"), el("b", {}, pesos(cs.total))] }, { c: ["Por hectárea sembrada", areaSemb ? pesos(cs.total / areaSemb) : "—"] }]),
     cs.sinPrecio.size ? el("p", { class: "hint" }, `Sin precio todavía: ${[...cs.sinPrecio].join(", ")}. Registra la compra${cs.sinPrecio.has("gasolina de riego") ? " (o el precio del galón en Catálogos)" : ""} para que sumen.`) : null,
-    el("p", { class: "hint" }, "Los insumos se valoran al costo promedio de sus compras. Falta sumar lo que no pasa por la app (análisis de suelo, asistencia técnica, cerca); eso sigue en la plantilla."));
+    el("p", { class: "hint" }, "Los insumos se valoran al costo promedio de sus compras y cuentan cuando se aplican. Lo demás (tubos, cerca, análisis de suelo, asistencia técnica) se agrega en la pestaña Gastos."));
   // Inventario
   const filasInv = Object.values(inv).sort((a, b) => a.producto.localeCompare(b.producto)).map(f => ({ cls: f.bajo || f.saldo < 0 ? "fila-alerta" : "",
     c: [f.producto + (f.mezcla ? " ⚠ unidades mezcladas" : ""), `${num(f.comprado, 1)} ${f.base}`, `${num(f.aplicado, 1)} ${f.base}`, `${num(f.saldo, 1)} ${f.base}`, f.costoProm != null ? pesos(f.costoProm) : "—"] }));
   const cardInv = el("div", { class: "card" }, el("h3", {}, "Bodega e inventario"),
     filasInv.length ? el("div", { class: "scroll-x" }, tabla(["Producto", "Comprado", "Aplicado", "Saldo", "$ / unidad"], filasInv)) : el("p", { class: "hint" }, "Aún no hay compras ni aplicaciones aprobadas."),
-    el("p", { class: "hint" }, "Saldo negativo = se aplicó más de lo que se registró como comprado."),
+    el("p", { class: "hint" }, "Saldo negativo = se aplicó más de lo que se registró como comprado. Los equipos (compras en «unidad») no entran a la bodega: suman en Costos."),
     el("button", { class: "btn", onclick: () => formRegistro("compra", null) }, "+ Registrar compra"));
   // Fertilizante por hectárea
   const porProd = {};
@@ -808,6 +839,41 @@ function pintarPanel() {
     el("div", { class: "card" }, el("h3", {}, "Exportar"), el("p", { class: "hint" }, "Todos los registros aprobados en CSV (se abre en Excel), con el costo de cada uno."), el("button", { class: "btn", onclick: exportarCsv }, "Descargar CSV")),
     el("p", { class: "hint" }, "Solo cuentan los registros aprobados."));
 }
+// ---------- Gastos (costo total del proyecto) ----------
+S.filtroGasto = "";
+function pintarGastos() {
+  if (!S.admin) return;
+  const cat = catActual(), todosAp = S.registros.filter(r => r.estado === "aprobado");
+  const inv = inventario(todosAp, cat), cs = costos(todosAp.filter(r => r.tipo !== "compra" || esEquipo(r.datos)), inv, precioGalon(todosAp, cat));
+  const area = S.lotes.filter(l => !l.archivado).reduce((s, l) => s + (l.area_ha || 0), 0);
+  const filas = [["Insumos aplicados (abono, semilla, agroquímicos)", cs.insumos], ["Labores (jornales y tractor)", cs.labores], ["Aplicaciones (dron, camioneta, fumigadores)", cs.aplicaciones],
+    ["Combustible de equipos", cs.combustible], ["Gasolina de riego", cs.gasolinaRiego], ["Equipos y herramientas", cs.equipos],
+    ...Object.entries(cs.porCategoria).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, v])].filter(([, v]) => v > 0);
+  const bodega = Object.values(inv).reduce((s, f) => s + (f.costoProm != null ? Math.max(f.saldo, 0) * f.costoProm : 0), 0);
+  // Lista: gastos, equipos y compras de bodega
+  const movs = S.registros.filter(r => (r.tipo === "gasto" || r.tipo === "compra") && r.estado !== "anulado" && r.estado !== "rechazado")
+    .filter(r => !S.filtroGasto || (S.filtroGasto === "bodega" ? r.tipo === "compra" : r.datos?.categoria === S.filtroGasto));
+  const cats = [...new Set(S.registros.filter(r => r.tipo === "gasto").map(r => r.datos?.categoria).filter(Boolean))];
+  const chip = (k, t) => el("button", { "aria-pressed": S.filtroGasto === k ? "true" : "false", onclick: () => { S.filtroGasto = k; pintarGastos(); } }, t);
+  $("gastosBody").replaceChildren(
+    el("div", { class: "total-proyecto" }, el("span", {}, "Total gastado en el proyecto"), el("b", {}, pesos(cs.total + bodega)),
+      el("span", {}, bodega > 0 ? `Incluye ${pesos(bodega)} en insumos que siguen en bodega. Costo de lo ya usado: ${pesos(cs.total)}.` : "Todo lo comprado ya se usó o es equipo."),
+      el("span", {}, area ? `${pesos((cs.total + bodega) / area)} por hectárea sembrada (${num(area, 2)} ha)` : "Falta el área sembrada para sacar el valor por hectárea")),
+    el("div", { class: "row-btns" },
+      el("button", { class: "btn primary", onclick: () => formRegistro("gasto", null) }, "+ Agregar gasto"),
+      el("button", { class: "btn", onclick: () => formRegistro("compra", null) }, "+ Compra de insumos")),
+    el("div", { class: "card" }, el("h3", {}, "En qué se ha ido la plata"),
+      filas.length ? el("table", { class: "t" }, el("tbody", {}, filas.map(([k, v]) => el("tr", {}, el("td", {}, k), el("td", { class: "n" }, pesos(v)))),
+        el("tr", {}, el("td", {}, el("b", {}, "Costo de lo ya usado")), el("td", { class: "n" }, el("b", {}, pesos(cs.total))))))
+        : el("p", { class: "hint" }, "Aún no hay gastos aprobados."),
+      bodega > 0 ? el("table", { class: "t" }, el("tbody", {}, el("tr", {}, el("td", {}, "Insumos en bodega (comprados, sin aplicar)"), el("td", { class: "n" }, pesos(bodega))),
+        el("tr", {}, el("td", {}, el("b", {}, "Total gastado")), el("td", { class: "n" }, el("b", {}, pesos(cs.total + bodega)))))) : null,
+      cs.sinPrecio.size ? el("p", { class: "hint" }, `Aplicado sin precio de compra: ${[...cs.sinPrecio].join(", ")}.`) : null),
+    el("div", { class: "chips" }, chip("", "Todos"), chip("bodega", "Compras de bodega"), cats.map(c => chip(c, c.replace(/ \(.*/, "")))),
+    movs.length ? el("div", { class: "list" }, movs.map(itemRegistro)) : el("div", { class: "empty" }, "No hay gastos aquí todavía. Agrega el primero con el botón de arriba."),
+    el("p", { class: "hint" }, "Solo suman los gastos aprobados. Lo que registra el administrador se aprueba solo."));
+}
+
 function exportarCsv() {
   const todosAp = S.registros.filter(r => r.estado === "aprobado"), cat = catActual();
   const inv = inventario(todosAp, cat), pGal = precioGalon(todosAp, cat);

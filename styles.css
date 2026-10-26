@@ -117,7 +117,7 @@ table.t th,table.t td{text-align:left;padding:6px 4px;border-bottom:1px solid va
 table.t td.n{text-align:right;font-variant-numeric:tabular-nums}
 
 /* Tabbar */
-.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:900;height:calc(var(--tab-h) + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom);background:var(--surface);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(4,1fr)}
+.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:900;height:calc(var(--tab-h) + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom);background:var(--surface);border-top:1px solid var(--line);display:grid;grid-auto-flow:column;grid-auto-columns:1fr}
 .tabbar button{border:0;background:none;display:grid;justify-items:center;align-content:center;gap:2px;font-size:.78rem;color:var(--muted);position:relative}
 .tabbar button[aria-selected="true"]{color:var(--ok);font-weight:600}
 .tabbar .badge{top:6px;right:calc(50% - 26px)}
@@ -177,3 +177,14 @@ table.t th{font-size:.78rem;color:var(--muted);font-weight:600}
 table.t th.n{text-align:right}
 table.t tr.fila-alerta td{color:var(--crit)}
 .kpi b{overflow-wrap:anywhere}
+
+/* v0.6: gastos y dictado */
+.total-proyecto{background:var(--verde);color:#fff;border-radius:16px;padding:16px;display:grid;gap:4px}
+.total-proyecto b{font-family:var(--display);font-size:2.4rem;line-height:1;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.total-proyecto span{font-size:.88rem;opacity:.85}
+.con-mic{display:grid;grid-template-columns:minmax(0,1fr) 48px;gap:8px;align-items:end}
+.mic{height:46px;border-radius:10px;border:1.5px solid var(--line);background:var(--surface);font-size:1.2rem;cursor:pointer}
+.mic.on{background:var(--crit-bg);border-color:var(--crit);animation:pulso 1s infinite}
+@keyframes pulso{50%{opacity:.55}}
+@media (prefers-reduced-motion:reduce){.mic.on{animation:none}}
+.tabbar button[hidden]{display:none}
