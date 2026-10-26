@@ -33,17 +33,20 @@ service cloud.firestore {
     // Registros de campo
     match /registros/{id} {
       allow read: if esAdmin() || (activo() && resource.data.autorUid == request.auth.uid);
+      // Solo el administrador puede crear registros aprobados o marcados como autoaprobados.
       allow create: if activo()
         && request.resource.data.autorUid == request.auth.uid
-        && (request.resource.data.estado == 'pendiente' || (esAdmin() && request.resource.data.estado == 'aprobado'));
+        && request.resource.data.autoaprobado == esAdmin()
+        && (request.resource.data.estado == 'pendiente' || (esAdmin() && request.resource.data.estado == 'aprobado'))
+        && !request.resource.data.keys().hasAny(['revisadoPor', 'revisadoEn', 'motivo']);
       // Administrador: aprobar, rechazar, pedir corrección, editar o anular.
       // Usuario de campo: solo sus registros pendientes o en corrección, y vuelven a "pendiente".
       allow update: if esAdmin() || (activo()
         && resource.data.autorUid == request.auth.uid
         && resource.data.estado in ['pendiente', 'correccion']
         && request.resource.data.estado == 'pendiente'
-        && request.resource.data.autorUid == resource.data.autorUid
-        && request.resource.data.autoaprobado == resource.data.autoaprobado);
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['datos', 'fechaHecho', 'justificacion', 'fotos', 'version', 'editadoEn', 'editadoPor', 'estado']));
       allow delete: if false; // nunca se borra: se anula
     }
 
@@ -70,7 +73,10 @@ service cloud.firestore {
     // Historial de cambios: se escribe, nunca se edita ni se borra.
     match /auditoria/{id} {
       allow read: if esAdmin();
-      allow create: if activo() && request.resource.data.uid == request.auth.uid;
+      // Cada quien solo deja historial de sus propios registros (el administrador, de todos).
+      allow create: if activo() && request.resource.data.uid == request.auth.uid
+        && (esAdmin() || (exists(/databases/$(database)/documents/registros/$(request.resource.data.registroId))
+            && get(/databases/$(database)/documents/registros/$(request.resource.data.registroId)).data.autorUid == request.auth.uid));
       allow update, delete: if false;
     }
   }

@@ -3,7 +3,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
-import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, updateDoc,
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, collection, doc, setDoc, updateDoc,
   getDoc, getDocs, onSnapshot, query, where, serverTimestamp, increment, deleteDoc }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { areaHa, parseKml, centroide, fechaLocal, diasEntre, comprimirFoto, csvEscape } from "./util.js";
@@ -12,7 +12,7 @@ import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, v
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir } from "./orto.js";
 
-const VERSION = "0.6 · 25-oct-2026";
+const VERSION = "0.7 · 25-oct-2026";
 const ADMIN_UID = "FsBVYYQXT4YMtHDgcgsgoEH9N1m1";
 const firebaseConfig = {
   apiKey: "AIzaSyCpf4LRwovuqNdGG5BENvDBS7OHwbIoEQw",
@@ -45,7 +45,6 @@ const el = (tag, attrs = {}, ...kids) => {
     if (v == null || v === false) continue;
     if (k === "class") e.className = v;
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
-    else if (k === "html") e.innerHTML = v;
     else e.setAttribute(k, v === true ? "" : v);
   }
   for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(String(k)));
@@ -91,6 +90,9 @@ $("bSalir").addEventListener("click", async () => {
     toast("Hay registros sin enviar. Si cierras sesión ahora se pueden perder. Toca otra vez para salir igual.", true); return;
   }
   await signOut(auth);
+  // Al cerrar sesión se borran del celular los datos guardados para usar sin señal, para que otra persona no los vea.
+  try { await terminate(db); await clearIndexedDbPersistence(db); } catch (e) {}
+  location.reload();
 });
 
 onAuthStateChanged(auth, async user => {
@@ -187,7 +189,7 @@ function pintarLotes() {
     const ll = l.borde.map(p => [p.lat, p.lng]);
     const pol = L.polygon(ll, estiloLote(l.id === S.loteSel)).addTo(grupoLotes);
     pol.on("click", ev => { if (midiendo) { agregarPuntoMedida(ev.latlng); return; } L.DomEvent.stopPropagation(ev); seleccionarLote(l.id); });
-    pol.bindTooltip(l.nombre, { permanent: false, direction: "center" });
+    pol.bindTooltip(el("span", {}, l.nombre), { permanent: false, direction: "center" }); // nodo de texto: el nombre nunca se interpreta como HTML
     polis.set(l.id, pol); bounds.push(...ll);
   }
   alternarClusters();

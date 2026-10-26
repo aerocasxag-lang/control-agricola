@@ -1,5 +1,5 @@
 // Service worker: guarda la app en el celular para abrirla sin señal.
-const VERSION = "agricola-v8";
+const VERSION = "agricola-v9";
 const APP = ["./", "index.html", "styles.css", "app.js", "util.js", "modulos.js", "mapas.js", "orto.js", "dibujo.js", "manifest.webmanifest", "icon.svg"];
 const LIBRERIAS = [
   "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css",
