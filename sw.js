@@ -1,5 +1,5 @@
 // Service worker: guarda la app en el celular para abrirla sin señal.
-const VERSION = "agricola-v3";
+const VERSION = "agricola-v4";
 const APP = ["./", "index.html", "styles.css", "app.js", "util.js", "mapas.js", "orto.js", "dibujo.js", "manifest.webmanifest", "icon.svg"];
 const LIBRERIAS = [
   "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css",
@@ -15,7 +15,8 @@ const TEJAS = "tejas-v1", MAX_TEJAS = 12000;
 self.addEventListener("install", e => {
   e.waitUntil((async () => {
     const c = await caches.open(VERSION);
-    await c.addAll(APP);
+    // cache:"reload" evita copiar una versión vieja que el navegador tenga guardada.
+    await c.addAll(APP.map(u => new Request(u, { cache: "reload" })));
     // Con CORS: los módulos de Firebase no funcionan desde una respuesta opaca.
     await Promise.all(LIBRERIAS.map(u => c.add(u).catch(() => {})));
     self.skipWaiting();
@@ -54,7 +55,7 @@ self.addEventListener("fetch", e => {
     e.respondWith((async () => {
       const c = await caches.open(VERSION);
       const guardado = await c.match(req, { ignoreSearch: url.origin === location.origin });
-      const red = fetch(req).then(r => { if (r.ok || r.type === "opaque") c.put(req, r.clone()); return r; }).catch(() => null);
+      const red = (url.origin === location.origin ? fetch(req.url, { cache: "no-cache" }) : fetch(req)).then(r => { if (r.ok || r.type === "opaque") c.put(req, r.clone()); return r; }).catch(() => null);
       return guardado || (await red) || (req.mode === "navigate" ? c.match("index.html") : Response.error());
     })());
   }
