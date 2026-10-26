@@ -1,15 +1,16 @@
 // Service worker: guarda la app en el celular para abrirla sin señal.
-const VERSION = "agricola-v2";
-const APP = ["./", "index.html", "styles.css", "app.js", "util.js", "manifest.webmanifest", "icon.svg"];
+const VERSION = "agricola-v3";
+const APP = ["./", "index.html", "styles.css", "app.js", "util.js", "mapas.js", "orto.js", "dibujo.js", "manifest.webmanifest", "icon.svg"];
 const LIBRERIAS = [
   "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css",
   "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js",
+  "https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js",
   "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js",
   "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js",
   "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js"
 ];
-const TEJAS = "tejas-v1", MAX_TEJAS = 3000;
+const TEJAS = "tejas-v1", MAX_TEJAS = 12000;
 
 self.addEventListener("install", e => {
   e.waitUntil((async () => {
@@ -34,20 +35,22 @@ self.addEventListener("fetch", e => {
   // Firebase (base de datos e inicio de sesión) maneja su propia caché: no se toca.
   if (/googleapis\.com$|firebaseio\.com$|identitytoolkit|securetoken/.test(url.hostname)) return;
 
-  // Tejas satelitales: red primero, guardando lo visitado; sin señal, lo guardado.
-  if (url.hostname === "server.arcgisonline.com") {
+  // Teselas de mapas: primero lo guardado (rápido y sin señal); si no está, se pide y se guarda.
+  if (/arcgisonline\.com$|tile\.opentopomap\.org$|tile\.openstreetmap\.org$/.test(url.hostname)) {
     e.respondWith((async () => {
       const c = await caches.open(TEJAS);
+      const g = await c.match(req.url);
+      if (g) return g;
       try {
         const r = await fetch(req);
-        c.put(req, r.clone()).then(() => recortar(c)).catch(() => {});
+        if (r.ok || r.type === "opaque") c.put(req.url, r.clone()).then(() => recortar(c)).catch(() => {});
         return r;
-      } catch { return (await c.match(req)) || Response.error(); }
+      } catch { return Response.error(); }
     })());
     return;
   }
   // App y librerías: lo guardado primero, actualizando en segundo plano.
-  if (url.origin === location.origin || /gstatic\.com$|cdnjs\.cloudflare\.com$|fonts\.googleapis\.com$/.test(url.hostname)) {
+  if (url.origin === location.origin || /gstatic\.com$|cdnjs\.cloudflare\.com$|cdn\.jsdelivr\.net$|fonts\.googleapis\.com$/.test(url.hostname)) {
     e.respondWith((async () => {
       const c = await caches.open(VERSION);
       const guardado = await c.match(req, { ignoreSearch: url.origin === location.origin });

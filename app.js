@@ -4,11 +4,13 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/fireba
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, setDoc, updateDoc,
-  getDoc, getDocs, onSnapshot, query, where, serverTimestamp, increment }
+  getDoc, getDocs, onSnapshot, query, where, serverTimestamp, increment, deleteDoc }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { areaHa, parseKml, centroide, fechaLocal, diasEntre, horasEntre, comprimirFoto, csvEscape } from "./util.js";
+import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
+import { procesarGeoTiff, partir } from "./orto.js";
 
-const VERSION = "0.2 · 25-oct-2026";
+const VERSION = "0.3 · 25-oct-2026";
 const ADMIN_UID = "FsBVYYQXT4YMtHDgcgsgoEH9N1m1";
 const firebaseConfig = {
   apiKey: "AIzaSyCpf4LRwovuqNdGG5BENvDBS7OHwbIoEQw",
@@ -28,7 +30,8 @@ const S = {
   user: null, perfil: null, admin: false,
   lotes: [], catalogos: null, registros: [], pendientesSync: 0,
   loteSel: null, finca: "", gps: null, unsubs: [],
-  filtroReg: "todos", seg: "reg", capa: "sat"
+  filtroReg: "todos", seg: "reg", base: "sat",
+  ortos: [], verOrto: true, verVigor: false, ortoSel: {} // ortoSel[loteId] = id del ortomosaico elegido
 };
 const CAT_DEFECTO = {
   productos: ["15-15-15", "DAP 18-46-0", "Urea 46%", "KCl 60%", "Cal dolomita"],
@@ -117,6 +120,11 @@ onAuthStateChanged(auth, async user => {
     pintarLotes(); pintarPanel();
     if (S.loteSel) { const l = lotePorId(S.loteSel); if (l) pintarFicha(l); else cerrarFicha(); }
   }, () => {}));
+  // Ortomosaicos (solo la ficha; la imagen se carga aparte)
+  S.unsubs.push(onSnapshot(collection(db, "ortos"), snap => {
+    S.ortos = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (b.fecha || "").localeCompare(a.fecha || ""));
+    if (S.loteSel) { mostrarCapasLote(S.loteSel); if (S.seg !== "reg") pintarSeg(); }
+  }, () => {}));
   // Catálogos
   S.unsubs.push(onSnapshot(doc(db, "config", "catalogos"), snap => {
     S.catalogos = snap.exists() ? snap.data() : CAT_DEFECTO;
@@ -151,13 +159,14 @@ function irA(v) {
 }
 
 // ---------- Mapa ----------
-let mapa = null, capaSat = null, grupoLotes = null, grupoClusters = null, marcadorGps = null;
+let mapa = null, grupoLotes = null, grupoClusters = null, marcadorGps = null;
 const polis = new Map();
 function iniciarMapa() {
   if (mapa) return;
-  mapa = L.map("map", { zoomControl: false, attributionControl: true }).setView([5.33, -72.39], 11);
-  capaSat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    { maxZoom: 20, maxNativeZoom: 18, attribution: "Imágenes © Esri" }).addTo(mapa);
+  mapa = L.map("map", { zoomControl: false, attributionControl: true, maxZoom: 21 }).setView([5.33, -72.39], 11);
+  S.base = ponerBase(mapa, baseGuardada());
+  mapa.createPane("ortos"); mapa.getPane("ortos").style.zIndex = 350;
+  mapa.createPane("vigor"); mapa.getPane("vigor").style.zIndex = 360;
   grupoLotes = L.layerGroup().addTo(mapa);
   grupoClusters = L.layerGroup().addTo(mapa);
   mapa.on("zoomend", alternarClusters);
@@ -211,10 +220,121 @@ function alternarClusters() {
     m.addTo(grupoClusters);
   }
 }
-$("bCapas").addEventListener("click", () => {
-  if (mapa.hasLayer(capaSat)) { mapa.removeLayer(capaSat); toast("Sin fondo satelital"); $("bCapas").classList.add("on"); }
-  else { capaSat.addTo(mapa); toast("Fondo satelital"); $("bCapas").classList.remove("on"); }
-});
+$("bCapas").addEventListener("click", abrirCapas);
+function abrirCapas() {
+  const bases = el("div", { class: "tipos" }, Object.entries(BASES).map(([k, b]) =>
+    el("button", { "aria-pressed": S.base === k ? "true" : "false", style: S.base === k ? "border-color:var(--ok);background:var(--ok-bg)" : "",
+      onclick: () => { S.base = ponerBase(mapa, k); cerrarModal(); toast("Mapa: " + b.nombre); } },
+      el("div", {}, el("b", {}, (S.base === k ? "✓ " : "") + b.nombre), el("span", {}, b.desc)))));
+  const chk = (id, txt, val, fn) => { const c = el("input", { type: "checkbox", id }); c.checked = val; c.addEventListener("change", () => fn(c.checked));
+    return el("label", { for: id, class: "check-row" }, c, el("span", {}, txt)); };
+  abrirModal("Capas del mapa",
+    el("h3", {}, "Mapa de fondo"), bases,
+    el("h3", {}, "Sobre el lote"),
+    chk("cOrto", "Ortomosaico del lote seleccionado", S.verOrto, v => { S.verOrto = v; if (S.loteSel) mostrarCapasLote(S.loteSel); }),
+    chk("cVigor", "Mapa de vigor (zonas débiles en rojo)", S.verVigor, v => { S.verVigor = v; if (S.loteSel) mostrarCapasLote(S.loteSel); }),
+    el("h3", {}, "Usar sin señal"),
+    el("p", { class: "hint" }, "Guarda en el celular el satélite de la zona que estás viendo para abrirlo en la sabana sin datos. Hazlo con wifi antes de salir. Los lotes, registros y ortomosaicos ya abiertos también quedan guardados."),
+    el("button", { class: "btn primary", onclick: () => { cerrarModal(); descargarZona(); } }, "Guardar esta zona para usar sin señal"));
+}
+let descargando = false;
+async function descargarZona() {
+  if (descargando) return;
+  if (!navigator.onLine) { toast("Necesitas señal (mejor wifi) para guardar la zona.", true); return; }
+  const b = mapa.getBounds(), z0 = Math.max(12, mapa.getZoom() - 2), z1 = 18;
+  const base = BASES[S.base]?.offline && BASES[S.base].capas.length ? BASES[S.base] : BASES.sat;
+  const urls = base.capas.flatMap(([u]) => teselasZona(b, z0, z1, u));
+  if (urls.length > 6000) { toast(`La zona es muy grande (${urls.length} imágenes). Acércate más al lote y repite.`, true); return; }
+  const mb = Math.round(urls.length * 25 / 1024);
+  if (!window.confirm(`Se guardarán ${urls.length} imágenes del satélite (unos ${mb} MB) de la zona que ves, del zoom ${z0} al ${z1}. ¿Continuar?`)) return;
+  descargando = true; let cancel = false;
+  const t = $("toast"); t.className = "toast"; t.hidden = false;
+  const r = await descargarTeselas(urls, (h, n) => { t.textContent = `Guardando mapa sin señal… ${Math.round(h / n * 100)} %`; }, () => cancel);
+  descargando = false; toast(r.fallas ? `Zona guardada (${r.fallas} imágenes fallaron; repite si hace falta)` : "Zona guardada. Ya puedes verla sin señal.");
+}
+
+// ---------- Ortomosaicos y vigor sobre el lote ----------
+let capaOrto = null, capaVigor = null, ortoCargado = null;
+const cacheImg = new Map();
+function ortosDe(loteId) { return S.ortos.filter(o => o.loteId === loteId); }
+function ortoElegido(loteId) { const os = ortosDe(loteId); return os.find(o => o.id === S.ortoSel[loteId]) || os[0] || null; }
+async function imagenOrto(o) {
+  if (cacheImg.has(o.id)) return cacheImg.get(o.id);
+  const qs = await getDocs(query(collection(db, "ortoPartes"), where("ortoId", "==", o.id)));
+  const partes = qs.docs.map(d => d.data()).sort((a, b) => a.i - b.i);
+  if (partes.length < o.partes) throw new Error("faltan partes");
+  const url = partes.map(p => p.data).join(""); cacheImg.set(o.id, url); return url;
+}
+async function mostrarCapasLote(loteId) {
+  if (!mapa) return;
+  const o = ortoElegido(loteId);
+  const quitar = () => { if (capaOrto) { mapa.removeLayer(capaOrto); capaOrto = null; } if (capaVigor) { mapa.removeLayer(capaVigor); capaVigor = null; } ortoCargado = null; };
+  if (!o || (!S.verOrto && !S.verVigor)) { quitar(); return; }
+  const lim = [[o.bounds.s, o.bounds.w], [o.bounds.n, o.bounds.e]];
+  if (ortoCargado !== o.id + S.verOrto + S.verVigor) {
+    quitar(); ortoCargado = o.id + S.verOrto + S.verVigor;
+    if (S.verVigor && o.vigor?.png) { capaVigor = L.imageOverlay(o.vigor.png, lim, { pane: "vigor", opacity: .8, className: "pixelado", interactive: false }).addTo(mapa); }
+    if (S.verOrto) {
+      try { const url = await imagenOrto(o); if (ortoCargado === o.id + S.verOrto + S.verVigor) capaOrto = L.imageOverlay(url, lim, { pane: "ortos", interactive: false }).addTo(mapa); }
+      catch (e) { toast(navigator.onLine ? "No se pudo cargar el ortomosaico" : "Este ortomosaico no está guardado en el celular. Ábrelo una vez con señal.", true); }
+    }
+  }
+}
+function segVuelos(l) {
+  const os = ortosDe(l.id), sel = ortoElegido(l.id);
+  const lista = os.length ? el("div", { class: "list" }, os.map(o => el("div", { class: "item " + (sel?.id === o.id ? "aprobado" : "") },
+    el("div", { class: "top" }, el("span", {}, "Vuelo " + fmtFecha(o.fecha)), el("span", { class: "pill " + (sel?.id === o.id ? "aprobado" : "cola") }, sel?.id === o.id ? "En el mapa" : "")),
+    el("div", { class: "meta" }, `${num(o.gsdCm, 1)} cm/px en la app · ${o.origen?.crs || ""} · ${o.nombre || ""}`),
+    o.vigor && el("div", { class: "res" }, o.vigor.sinCultivo ? "Sin cultivo visible todavía" : `Cobertura mediana ${num(o.vigor.mediana, 1)} % · ${o.vigor.debiles} celdas débiles (${num(o.vigor.areaDebilHa, 2)} ha)`),
+    el("div", { class: "row-btns" },
+      el("button", { class: "btn small", onclick: () => { S.ortoSel[l.id] = o.id; S.verOrto = true; mostrarCapasLote(l.id); pintarSeg(); } }, "Ver en el mapa"),
+      S.admin && el("button", { class: "btn small", onclick: () => borrarOrto(o) }, "Quitar")))))
+    : el("div", { class: "empty" }, "Este lote no tiene ortomosaicos todavía.");
+  return el("div", { style: "display:grid;gap:10px" }, lista,
+    S.admin ? el("button", { class: "btn primary", onclick: () => formOrto(l) }, "+ Subir ortomosaico (GeoTIFF)") : null,
+    el("p", { class: "hint" }, "Para tenerlo sin señal en el campo, ábrelo una vez con señal: queda guardado en el celular."));
+}
+function segVigor(l) {
+  const o = ortoElegido(l.id);
+  if (!o) return el("div", { class: "empty" }, "Sube un ortomosaico en «Vuelos» y aquí aparece el mapa de vigor.");
+  const v = o.vigor || {};
+  const kv = [["Vuelo", fmtFecha(o.fecha)], ["Cobertura verde mediana", num(v.mediana, 1) + " %"], ["Débil si está por debajo de", num(v.corte, 1) + " %"],
+    ["Celdas débiles", `${v.debiles} de ${v.total} (celdas de ${v.celdaM} m)`], ["Área débil", num(v.areaDebilHa, 2) + " ha"]];
+  return el("div", { style: "display:grid;gap:10px" },
+    v.sinCultivo ? el("div", { class: "calc warn" }, el("b", {}, "Sin cultivo visible"), el("span", {}, "Casi no hay verde en la imagen. Si el cultivo tiene menos de 10 días, vuela de nuevo en una semana.")) : null,
+    el("dl", { class: "kv" }, kv.flatMap(([a, b]) => [el("dt", {}, a), el("dd", {}, b)])),
+    el("div", { class: "leyenda" }, el("span", { class: "sw", style: "background:#D63027" }), "Débil", el("span", { class: "sw", style: "background:#F7E878" }), "Poca cobertura", el("span", { class: "sw", style: "background:#2F9828" }), "Buena cobertura"),
+    el("button", { class: "btn " + (S.verVigor ? "" : "primary"), onclick: () => { S.verVigor = !S.verVigor; mostrarCapasLote(l.id); pintarSeg(); } }, S.verVigor ? "Ocultar vigor del mapa" : "Ver vigor en el mapa"),
+    el("p", { class: "hint" }, "Una celda débil es una alerta para ir a mirar: falta de agua, mala germinación, plaga o encharcamiento. La causa se confirma en el campo y se anota como registro."));
+}
+function formOrto(l) {
+  const f = el("input", { type: "file", id: "oArchivo", accept: ".tif,.tiff,image/tiff" });
+  const fecha = el("input", { type: "date", id: "oFecha", max: fechaLocal() }); fecha.value = fechaLocal();
+  const estado = el("p", { class: "hint", "aria-live": "polite" }, "Exporta el ortomosaico como GeoTIFF RGB (WGS84 o UTM), recortado al lote si puedes. La app lo reduce para que pese poco.");
+  const b = el("button", { class: "btn primary" }, "Procesar y guardar");
+  b.addEventListener("click", async () => {
+    const file = f.files[0]; if (!file) { toast("Elige el archivo GeoTIFF", true); return; }
+    if (!navigator.onLine) { toast("Necesitas señal para subir el ortomosaico.", true); return; }
+    b.disabled = true;
+    try {
+      const r = await procesarGeoTiff(file, { borde: l.borde, paso: t => estado.textContent = t });
+      const ref = doc(collection(db, "ortos")), partes = partir(r.data);
+      estado.textContent = `Guardando (${partes.length} parte(s), ${Math.round(r.data.length / 1024)} KB)…`;
+      for (let i = 0; i < partes.length; i++) await setDoc(doc(db, "ortoPartes", `${ref.id}_${i}`), { ortoId: ref.id, i, data: partes[i] });
+      await setDoc(ref, { loteId: l.id, fecha: fecha.value, nombre: file.name, bounds: r.bounds, ancho: r.ancho, alto: r.alto, gsdCm: r.gsdCm, origen: r.origen,
+        vigor: r.vigor, partes: partes.length, creado: serverTimestamp(), autorUid: S.user.uid });
+      cacheImg.set(ref.id, r.data); S.ortoSel[l.id] = ref.id; S.verOrto = true;
+      cerrarModal(); toast("Ortomosaico guardado"); S.seg = "vue"; pintarFicha(l); mapa.flyToBounds([[r.bounds.s, r.bounds.w], [r.bounds.n, r.bounds.e]], { paddingBottomRight: [0, 280] });
+    } catch (e) { b.disabled = false; estado.textContent = "No se pudo: " + (e.message || e.code || e); }
+  });
+  abrirModal("Subir ortomosaico", el("p", { class: "hint" }, l.nombre), el("label", { for: "oFecha" }, "Fecha del vuelo", fecha), el("label", { for: "oArchivo" }, "Archivo GeoTIFF", f), estado, b);
+}
+function borrarOrto(o) {
+  if (!window.confirm(`¿Quitar el ortomosaico del ${fmtFecha(o.fecha)}? Se borra de la app; tu archivo original no se toca.`)) return;
+  for (let i = 0; i < (o.partes || 0); i++) deleteDoc(doc(db, "ortoPartes", `${o.id}_${i}`)).catch(() => {});
+  deleteDoc(doc(db, "ortos", o.id)).catch(e => toast("No se pudo quitar (" + e.code + ")", true));
+  cacheImg.delete(o.id); toast("Ortomosaico quitado");
+}
 $("bGps").addEventListener("click", () => {
   if (!S.gps) { toast("Esperando señal GPS. Revisa que la ubicación esté activada.", true); return; }
   mapa.flyTo([S.gps.lat, S.gps.lng], Math.max(mapa.getZoom(), 17));
@@ -246,7 +366,7 @@ function seleccionarLote(id) {
   if (prev && polis.get(prev)) polis.get(prev).setStyle(estiloLote(false));
   const pol = polis.get(id); if (pol) { pol.setStyle(estiloLote(true)); mapa.flyToBounds(pol.getBounds(), { paddingBottomRight: [0, 280], paddingTopLeft: [20, 80], maxZoom: 18 }); }
   S.seg = "reg"; $("fMas").hidden = true;
-  pintarFicha(lotePorId(id));
+  pintarFicha(lotePorId(id)); mostrarCapasLote(id);
 }
 function cerrarFicha() {
   if (S.loteSel && polis.get(S.loteSel)) polis.get(S.loteSel).setStyle(estiloLote(false));
@@ -278,8 +398,8 @@ function pintarSeg() {
   if (S.seg === "reg") {
     const regs = S.registros.filter(r => r.loteId === l.id);
     body.replaceChildren(regs.length ? el("div", { class: "list" }, regs.slice(0, 30).map(itemRegistro)) : el("div", { class: "empty" }, "Aún no hay registros en este lote."));
-  } else if (S.seg === "vue") body.replaceChildren(el("div", { class: "empty" }, "Aquí van los ortomosaicos del Air 3S por fecha. Llega en la entrega 3 (mapas)."));
-  else body.replaceChildren(el("div", { class: "empty" }, "Aquí van las zonas débiles del análisis de vigor RGB. Llega en la entrega 3 (mapas)."));
+  } else if (S.seg === "vue") body.replaceChildren(segVuelos(l));
+  else body.replaceChildren(segVigor(l));
 }
 $("fRegistrar").addEventListener("click", () => elegirTipo(S.loteSel));
 $("fEditar").addEventListener("click", () => formLote(lotePorId(S.loteSel)));
@@ -320,7 +440,8 @@ function listaLotes() {
   abrirModal("Lotes", vis.length ? el("div", { class: "list" }, vis.map(l => el("button", { class: "item", onclick: () => { cerrarModal(); irA("mapa"); seleccionarLote(l.id); } },
     el("div", { class: "top" }, el("span", {}, l.nombre), el("span", {}, l.area_ha ? num(l.area_ha, 2) + " ha" : (l.borde?.length ? num(areaHa(l.borde), 2) + " ha" : ""))),
     el("div", { class: "meta" }, [l.finca, l.municipio, l.ciclo].filter(Boolean).join(" · ") || "Sin datos")))) : el("div", { class: "empty" }, S.admin ? "No hay lotes. Créalo en Yo → Lotes." : "El administrador aún no ha creado lotes."),
-    S.admin && el("button", { class: "btn primary", onclick: () => formLote(null) }, "+ Nuevo lote"));
+    S.admin && el("button", { class: "btn primary", onclick: () => formLote(null) }, "+ Nuevo lote"),
+    S.admin && el("p", { class: "hint" }, "Para un lote nuevo puedes importar un KML/KMZ, dibujar el borde sobre el satélite o caminarlo con el GPS del celular."));
 }
 
 // ---------- Formulario de lote (admin) ----------

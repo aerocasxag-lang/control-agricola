@@ -151,3 +151,9 @@ table.t td.n{text-align:right;font-variant-numeric:tabular-nums}
 .toast{position:fixed;z-index:1300;left:50%;transform:translateX(-50%);bottom:calc(var(--tab-h) + 80px + env(safe-area-inset-bottom));background:var(--verde);color:#fff;padding:10px 16px;border-radius:12px;max-width:min(92vw,480px);font-size:.95rem;box-shadow:0 4px 12px rgba(0,0,0,.3)}
 .toast.err{background:var(--crit)}
 .leaflet-container{font-family:var(--body)}
+.check-row{display:flex;align-items:center;gap:10px;text-transform:none;letter-spacing:0;font-size:1rem;color:var(--fg);font-weight:500;background:var(--surface);border:1.5px solid var(--line);border-radius:12px;padding:12px}
+.check-row input{width:22px;height:22px;flex:none}
+.leyenda{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:.85rem;color:var(--muted)}
+.leyenda .sw{width:14px;height:14px;border-radius:3px;display:inline-block}
+.pixelado{image-rendering:pixelated;image-rendering:crisp-edges}
+.modal-body h3{font-size:1.15rem;margin-top:4px}

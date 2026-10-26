@@ -1,6 +1,6 @@
 # Control Agrícola · AeroCAS — cómo ponerla a funcionar
 
-Versión 0.2 (25-oct-2026): inicio de sesión, mapa de lotes con ficha, registros de riego, fertilización y plagas (con fotos y GPS), bandeja de aprobación, historial de cambios, panel básico y exportación CSV. Funciona sin señal después de la primera entrada.
+Versión 0.3 (25-oct-2026): todo lo de la 0.2 más capas de mapa (satélite, satélite con nombres, topográfico, calles), guardar zonas para usar sin señal, ortomosaico propio sobre el lote, mapa de vigor y borde del lote dibujado o caminado con GPS.
 
 ## Paso 1 · Pegar las reglas de seguridad (5 min)
 

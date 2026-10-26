@@ -55,6 +55,18 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Ortomosaicos (ficha) y la imagen partida en trozos
+    match /ortos/{id} {
+      allow read: if activo();
+      allow write: if esAdmin();
+    }
+    match /ortoPartes/{id} {
+      allow read: if activo();
+      allow create: if esAdmin() && request.resource.data.data is string && request.resource.data.data.size() < 1000000;
+      allow update: if false;
+      allow delete: if esAdmin();
+    }
+
     // Historial de cambios: se escribe, nunca se edita ni se borra.
     match /auditoria/{id} {
       allow read: if esAdmin();
