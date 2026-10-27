@@ -4,16 +4,17 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/fireba
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, collection, doc, setDoc, updateDoc,
-  getDoc, getDocs, onSnapshot, query, where, serverTimestamp, increment, deleteDoc, writeBatch }
+  getDoc, getDocs, onSnapshot, query, where, serverTimestamp, increment, deleteDoc, writeBatch, deleteField }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { areaHa, parseKml, centroide, fechaLocal, diasEntre, comprimirFoto, csvEscape } from "./util.js";
 import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, vistaCalculo, revisar, resumen, filasCalculadas, fmtDosis,
   inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO } from "./modulos.js";
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir } from "./orto.js";
+import { CRONO } from "./cronograma.js";
 import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.8 · 27-oct-2026";
+const VERSION = "0.9 · 27-oct-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -63,7 +64,7 @@ function toast(msg, err = false) {
   clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 3800);
 }
 function abrirModal(titulo, ...contenido) {
-  $("mTitulo").textContent = titulo; $("mBody").replaceChildren(...contenido); $("modal").hidden = false;
+  $("mTitulo").textContent = titulo; $("mBody").replaceChildren(...contenido.flat().filter(x => x != null && x !== false)); $("modal").hidden = false;
   $("mBody").scrollTop = 0;
 }
 function cerrarModal() { $("modal").hidden = true; $("mBody").replaceChildren(); }
@@ -404,7 +405,8 @@ function pintarSeg() {
   if (S.seg === "reg") {
     const regs = S.registros.filter(r => r.loteId === l.id);
     body.replaceChildren(regs.length ? el("div", { class: "list" }, regs.slice(0, 30).map(itemRegistro)) : el("div", { class: "empty" }, "Aún no hay registros en este lote."));
-  } else if (S.seg === "vue") body.replaceChildren(segVuelos(l));
+  } else if (S.seg === "age") body.replaceChildren(segAgenda(l));
+  else if (S.seg === "vue") body.replaceChildren(segVuelos(l));
   else body.replaceChildren(segVigor(l));
 }
 $("fRegistrar").addEventListener("click", () => elegirTipo(S.loteSel));
@@ -750,6 +752,99 @@ async function detalleRegistro(id) {
   }
 }
 
+// ---------- Agenda: cronograma por días desde la siembra ----------
+const sumarDias = (f, n) => { const [y, m, d] = f.split("-").map(Number); const t = new Date(y, m - 1, d + n); return fechaLocal(t); };
+function fechaCorte1(l) {
+  const c = S.registros.filter(r => r.loteId === l.id && r.tipo === "cosecha" && vigente(r)).map(r => r.fechaHecho).sort()[0];
+  return { fecha: c || l.fechaCorte || (l.fechaSiembra ? sumarDias(l.fechaSiembra, 95) : null), real: !!c };
+}
+function agenda(l) {
+  if (!l?.fechaSiembra) return null;
+  const hoy = fechaLocal(), corte = fechaCorte1(l), marcas = l.crono || {};
+  return CRONO.map(it => {
+    const base = it.base === "corte" ? corte.fecha : l.fechaSiembra;
+    const fecha = sumarDias(base, it.dia), fin = sumarDias(fecha, Math.max(0, (it.dur || 1) - 1));
+    const m = marcas[it.id];
+    const estado = m ? m.estado : fin < hoy ? "atrasada" : fecha <= hoy ? "hoy" : diasEntre(hoy, fecha) <= 7 ? "pronto" : "futura";
+    return { ...it, fecha, fin, marca: m || null, estado, estimada: it.base === "corte" && !corte.real };
+  });
+}
+const etiquetaDia = it => it.base === "corte" ? `Corte ${it.dia >= 0 ? "+" : ""}${it.dia}` : it.dia < 0 ? `Día ${it.dia}` : `Día ${it.dia}`;
+const ESTADO_AG = { hecha: "Hecha", omitida: "No fue necesaria", noaplica: "No aplica", atrasada: "Atrasada", hoy: "Hoy", pronto: "Próxima", futura: "" };
+function filaAgenda(l, it) {
+  const cls = it.estado === "atrasada" && it.tipo !== "cond" ? "rechazado" : it.estado === "hoy" ? "pendiente" : it.marca ? "aprobado" : "";
+  return el("button", { class: "item ag " + cls, onclick: () => detalleAgenda(l.id, it.id) },
+    el("div", { class: "top" }, el("span", {}, it.act),
+      it.tipo !== "labor" ? el("span", { class: "pill " + (it.tipo === "fija" ? "aprobado" : "correccion") }, it.tipo === "fija" ? "Fija" : "Si hay umbral") : null),
+    el("div", { class: "meta" }, [`${etiquetaDia(it)} · ${fmtFecha(it.fecha)}${it.fin !== it.fecha ? " a " + fmtFecha(it.fin) : ""}${it.estimada ? " (estimada)" : ""}`,
+      ESTADO_AG[it.estado]].filter(Boolean).join(" · ")));
+}
+function segAgenda(l) {
+  const ag = agenda(l);
+  if (!ag) return el("div", { class: "empty" }, S.admin ? "Pon la fecha de siembra (real o prevista) en «Editar» y aquí aparece qué toca cada día." : "El administrador aún no ha puesto la fecha de siembra.");
+  const hoy = fechaLocal(), dds = diasEntre(l.fechaSiembra, hoy), corte = fechaCorte1(l);
+  const enRebrote = corte.real && hoy >= corte.fecha;
+  const cab = enRebrote ? `Rebrote: día ${diasEntre(corte.fecha, hoy)} desde el corte 1` : dds >= 0 ? `Hoy es el día ${dds} desde la siembra` : `Faltan ${-dds} días para la siembra`;
+  const atras = ag.filter(i => i.estado === "atrasada"), ahora = ag.filter(i => i.estado === "hoy" || i.estado === "pronto");
+  const resto = ag.filter(i => i.estado === "futura"), hechas = ag.filter(i => i.marca);
+  const grupo = (t, its, abierto, nota) => its.length ? el("details", { class: "ag-grupo", open: abierto ? true : null },
+    el("summary", {}, `${t} (${its.length})`), nota ? el("p", { class: "hint" }, nota) : null, el("div", { class: "list" }, its.map(i => filaAgenda(l, i)))) : null;
+  return el("div", { style: "display:grid;gap:10px" },
+    el("div", { class: "calc ok" }, el("b", {}, cab), el("span", {}, `Siembra: ${fmtFecha(l.fechaSiembra)} · Corte 1: ${fmtFecha(corte.fecha)}${corte.real ? "" : " (previsto)"}`)),
+    grupo("Atrasadas", atras, true, "Márcalas como hechas, o «no aplica» si no tocaba. Las condicionales solo se hacen si el monitoreo pasó el umbral."),
+    S.admin && atras.some(i => i.base === "siembra" && i.dia < 0) ? el("button", { class: "btn small", onclick: () => {
+      const pre = atras.filter(i => i.base === "siembra" && i.dia < 0);
+      if (!confirmar(`¿Marcar como hechas las ${pre.length} labores de antes de la siembra que siguen pendientes? Luego puedes cambiar cualquiera.`)) return;
+      const cambios = {}; for (const i of pre) cambios["crono." + i.id] = { estado: "hecha", fecha: fechaLocal(), uid: S.user.uid, registroId: null };
+      updateDoc(doc(db, "lotes", l.id), cambios).then(() => toast("Labores de presiembra marcadas")).catch(e => toast("No se guardó (" + e.code + ")", true));
+    } }, "Ya hice todo lo de antes de la siembra") : null,
+    grupo("Hoy y próximos 7 días", ahora, true),
+    !atras.length && !ahora.length ? el("div", { class: "empty" }, "Nada pendiente para esta semana.") : null,
+    grupo("Más adelante", resto, false), grupo("Hechas o descartadas", hechas, false),
+    el("p", { class: "hint" }, "Las fechas salen de la fecha de siembra del lote. Las del rebrote se cuentan desde el registro de corte 1; mientras no exista, desde el corte previsto."));
+}
+function detalleAgenda(loteId, id) {
+  const l = lotePorId(loteId), it = agenda(l)?.find(x => x.id === id); if (!it) return;
+  const marcar = (estado, registroId = null) => {
+    updateDoc(doc(db, "lotes", l.id), { ["crono." + it.id]: { estado, fecha: fechaLocal(), uid: S.user.uid, registroId } }).catch(e => toast("No se guardó (" + e.code + ")", true));
+  };
+  const reg = (tipo, txt) => el("button", { class: "btn primary", onclick: () => { cerrarModal();
+    formRegistro(tipo, l.id, null, { inicial: inicialAgenda(tipo, it), alGuardar: rid => { if (S.admin && (it.tipo !== "cond" || tipo === "fumigacion")) marcar("hecha", rid); } }); } }, txt);
+  const botones = [];
+  if (it.tipo === "cond") { botones.push(reg("plaga", "Registrar el monitoreo"), reg("fumigacion", "Pasó el umbral: registrar la aplicación")); }
+  else if (it.reg) botones.push(reg(it.reg, /parasitoide/i.test(it.act) ? "Registrar la liberación" : "Registrar " + TIPOS[it.reg].nombre.toLowerCase()));
+  if (S.admin) {
+    if (it.marca) botones.push(el("button", { class: "btn", onclick: () => { updateDoc(doc(db, "lotes", l.id), { ["crono." + it.id]: deleteField() }).catch(() => {}); cerrarModal(); } }, "Volver a pendiente"));
+    else botones.push(el("div", { class: "row-btns" },
+      el("button", { class: "btn ok", onclick: () => { marcar("hecha"); cerrarModal(); toast("Marcada como hecha"); } }, "Marcar hecha"),
+      el("button", { class: "btn", onclick: () => { marcar(it.tipo === "cond" ? "omitida" : "noaplica"); cerrarModal(); } }, it.tipo === "cond" ? "No fue necesaria" : "No aplica")));
+  }
+  const filas = [["Cuándo", `${etiquetaDia(it)} · ${fmtFecha(it.fecha)}${it.fin !== it.fecha ? " a " + fmtFecha(it.fin) : ""}${it.estimada ? " (estimada)" : ""}`], ["Fase", it.fase],
+    ["Tipo", it.tipo === "fija" ? "Fija: se hace sí o sí" : it.tipo === "cond" ? "Condicional: solo si el monitoreo pasa el umbral" : "Labor"], ["Quién o con qué", it.resp || "—"]];
+  if (it.marca) filas.push(["Estado", `${ESTADO_AG[it.marca.estado]} (${fmtFecha(it.marca.fecha)})`]);
+  const r = it.marca?.registroId && S.registros.find(x => x.id === it.marca.registroId);
+  abrirModal(it.act, el("dl", { class: "kv" }, filas.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)])),
+    it.obj ? el("p", { class: "hint", style: "font-size:.95rem;color:var(--fg)" }, it.obj) : null, r ? itemRegistro(r) : null, ...botones);
+}
+function inicialAgenda(tipo, it) {
+  const obs = `Agenda: ${it.act} (${etiquetaDia(it)})`, ini = { obs };
+  if (tipo === "labor") { const a = it.act.toLowerCase(); ini.labor = /desyerbe|maleza|escapes/.test(a) ? "Desyerbe manual" : /arada/.test(a) ? "Arado" : /pulida/.test(a) ? "Rastrillo" : /surcado/.test(a) ? "Surcado" : /silo|picadora/.test(a) ? "Corte y ensilaje" : /instalaci/.test(a) ? "Riego" : "Otra"; }
+  if (tipo === "plaga") { const p = (catActual().plagas || []).find(x => it.act.toLowerCase().includes(x.nombre.toLowerCase().split(" ")[0])); if (p) ini.plaga = p.nombre; }
+  return ini;
+}
+function alertasAgenda() {
+  const out = [], hoy = fechaLocal();
+  for (const l of lotesVisibles()) {
+    const ag = agenda(l); if (!ag) continue;
+    const ir = () => { irA("mapa"); seleccionarLote(l.id); S.seg = "age"; pintarFicha(l); };
+    for (const it of ag) {
+      if (it.estado === "hoy") out.push({ t: `${l.nombre}: ${it.tipo === "cond" ? "revisar umbral — " : "hoy toca "}${it.act} (${etiquetaDia(it)})`, go: ir });
+      else if (it.estado === "atrasada" && it.tipo !== "cond" && it.reg !== null && diasEntre(it.fin, hoy) <= 10) out.push({ t: `${l.nombre}: atrasada — ${it.act} (${fmtFecha(it.fecha)})`, go: ir });
+    }
+  }
+  return out;
+}
+
 // ---------- Alertas ----------
 const vigente = r => r.estado !== "anulado" && r.estado !== "rechazado";
 function alertas() {
@@ -777,6 +872,7 @@ function alertas() {
     const inv = inventario(S.registros.filter(r => r.estado === "aprobado"), catActual());
     for (const f of Object.values(inv)) if (f.bajo) out.push({ t: `Bodega: ${f.producto} por debajo del mínimo (quedan ${num(f.saldo, 1)} ${f.base})`, go: () => irA("panel") });
   }
+  out.push(...alertasAgenda());
   if (S.pendientesSync) out.unshift({ t: `${S.pendientesSync} registro(s) guardados en el celular, sin enviar`, go: () => {} });
   return out;
 }

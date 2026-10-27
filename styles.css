@@ -85,7 +85,7 @@ h1,h2,h3{font-family:var(--display);margin:0;line-height:1.1}
 .act{border:0;background:var(--surface);border-radius:12px;padding:12px 4px;font-weight:600;font-size:.92rem}
 .act.main{background:var(--ok);color:#fff}
 .row-link{display:flex;justify-content:space-between;border:0;background:var(--surface);border-radius:12px;padding:12px 14px;color:var(--muted)}
-.seg{display:grid;grid-template-columns:repeat(3,1fr);background:var(--surface);border-radius:99px;padding:3px}
+.seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;background:var(--surface);border-radius:99px;padding:3px}
 .seg button{border:0;background:none;border-radius:99px;padding:8px 4px;font-size:.88rem;color:var(--muted)}
 .seg button[aria-selected="true"]{background:var(--verde);color:#fff;font-weight:600}
 .seg-body{min-height:80px}
@@ -211,3 +211,8 @@ table.t tr.fila-alerta td{color:var(--crit)}
 .lista-reg.mal{color:var(--crit)}
 .lista-items li.hecho .lista-nom{text-decoration:line-through;color:var(--muted)}
 .tag-conf{display:inline-block;font-size:.7rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:1px 6px;border-radius:4px;margin-left:6px;vertical-align:2px;border:1px solid var(--dorado);color:var(--warn)}
+/* Agenda (v0.9) */
+.ag-grupo{display:grid;gap:8px}
+.ag-grupo summary{cursor:pointer;font-family:var(--display);font-size:1.15rem;font-weight:600;padding:4px 0}
+.ag-grupo[open] summary{margin-bottom:6px}
+.item.ag .top span:first-child{font-weight:600;overflow-wrap:anywhere}
