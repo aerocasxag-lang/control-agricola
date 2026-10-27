@@ -70,6 +70,15 @@ service cloud.firestore {
       allow delete: if esAdmin();
     }
 
+    // Lista de compras del proyecto (solo el administrador)
+    match /lista/{id} {
+      allow read, delete: if esAdmin();
+      allow create, update: if esAdmin()
+        && request.resource.data.keys().hasOnly(['seccion', 'nombre', 'detalle', 'confirmar', 'comprado', 'orden', 'tipo', 'pre', 'registroId', 'actualizado', 'actualizadoPor'])
+        && request.resource.data.nombre is string && request.resource.data.nombre.size() > 0 && request.resource.data.nombre.size() <= 120
+        && request.resource.data.comprado is bool;
+    }
+
     // Historial de cambios: se escribe, nunca se edita ni se borra.
     match /auditoria/{id} {
       allow read: if esAdmin();

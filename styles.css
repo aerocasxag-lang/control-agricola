@@ -188,3 +188,26 @@ table.t tr.fila-alerta td{color:var(--crit)}
 @keyframes pulso{50%{opacity:.55}}
 @media (prefers-reduced-motion:reduce){.mic.on{animation:none}}
 .tabbar button[hidden]{display:none}
+/* Lista de compras (v0.8) */
+.seg-gastos{grid-template-columns:1fr 1fr;border:1px solid var(--line)}
+.barra{height:8px;border-radius:4px;background:rgba(255,255,255,.2);overflow:hidden;margin:6px 0 2px}
+.barra i{display:block;height:100%;background:var(--dorado);transition:width .25s}
+.barra.fina{grid-column:1/-1;height:4px;margin:0;background:var(--line)}
+.barra.fina i{background:var(--ok)}
+.lista-sec{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.lista-sec summary{list-style:none;cursor:pointer;padding:12px 14px;display:grid;grid-template-columns:1fr auto;gap:6px 10px;align-items:center}
+.lista-sec summary::-webkit-details-marker{display:none}
+.lista-tit{font-family:var(--display);font-size:1.25rem;font-weight:600}
+.lista-cnt{font-size:.88rem;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
+.lista-cnt.ok{color:var(--ok)}
+.lista-items{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.lista-items li{display:grid;grid-template-columns:44px 1fr;align-items:start;border-top:1px solid var(--line)}
+.lista-items li:first-child{border-top:0}
+.lista-items input[type=checkbox]{width:24px;height:24px;margin:14px 0 0 12px;accent-color:var(--ok)}
+.lista-txt{border:0;background:none;text-align:left;padding:12px 14px 12px 4px;display:grid;gap:2px;width:100%;color:var(--fg);min-width:0}
+.lista-nom{font-weight:600;overflow-wrap:anywhere}
+.lista-det{font-size:.86rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.lista-reg{font-size:.84rem;color:var(--ok);font-weight:600;font-variant-numeric:tabular-nums}
+.lista-reg.mal{color:var(--crit)}
+.lista-items li.hecho .lista-nom{text-decoration:line-through;color:var(--muted)}
+.tag-conf{display:inline-block;font-size:.7rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:1px 6px;border-radius:4px;margin-left:6px;vertical-align:2px;border:1px solid var(--dorado);color:var(--warn)}

@@ -4,15 +4,16 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/fireba
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, terminate, clearIndexedDbPersistence, collection, doc, setDoc, updateDoc,
-  getDoc, getDocs, onSnapshot, query, where, serverTimestamp, increment, deleteDoc }
+  getDoc, getDocs, onSnapshot, query, where, serverTimestamp, increment, deleteDoc, writeBatch }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { areaHa, parseKml, centroide, fechaLocal, diasEntre, comprimirFoto, csvEscape } from "./util.js";
 import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, vistaCalculo, revisar, resumen, filasCalculadas, fmtDosis,
   inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO } from "./modulos.js";
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir } from "./orto.js";
+import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.7.1 · 26-oct-2026";
+const VERSION = "0.8 · 27-oct-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -38,7 +39,8 @@ const S = {
   lotes: [], catalogos: null, registros: [], pendientesSync: 0,
   loteSel: null, finca: "", gps: null, unsubs: [],
   filtroReg: "todos", filtroTipo: "", seg: "reg", base: "sat",
-  ortos: [], verOrto: true, verVigor: false, ortoSel: {} // ortoSel[loteId] = id del ortomosaico elegido
+  ortos: [], verOrto: true, verVigor: false, ortoSel: {}, // ortoSel[loteId] = id del ortomosaico elegido
+  lista: [], listaCargada: false, vistaGastos: "gastos"
 };
 const ESTADOS = { pendiente: "Pendiente", aprobado: "Aprobado", rechazado: "Rechazado", correccion: "Corrección", anulado: "Anulado" };
 
@@ -115,7 +117,7 @@ onAuthStateChanged(auth, async user => {
       setDoc(doc(db, "usuarios", user.uid), { nombre: "Jorge Andrés Herrera", correo: user.email, rol: "admin", activo: true, creado: serverTimestamp() });
     }
     $("tabPanel").hidden = !S.admin; $("tabGastos").hidden = !S.admin;
-    pintarYo(); escucharRegistros();
+    pintarYo(); escucharRegistros(); if (S.admin) escucharLista();
   }, () => {}));
   // Lotes
   S.unsubs.push(onSnapshot(collection(db, "lotes"), snap => {
@@ -529,10 +531,10 @@ function ctrlDosis(id, campo, cat, previos) {
   return cont;
 }
 
-function formRegistro(tipo, loteId, previo = null) {
+function formRegistro(tipo, loteId, previo = null, opts = {}) {
   const T = TIPOS[tipo], l = T.sinLote ? null : lotePorId(loteId), cat = catActual();
   if (!T.sinLote && !l) { toast("Lote no encontrado", true); return; }
-  const val = previo ? { ...previo.datos } : {};
+  const val = previo ? { ...previo.datos } : { ...(opts.inicial || {}) };
   const fotos = [], ctrls = {}, partes = [];
   const fecha = el("input", { type: "date", id: "rFecha", max: fechaLocal() }); fecha.value = previo?.fechaHecho || fechaLocal();
   const just = el("input", { type: "text", id: "rJust", placeholder: "¿Por qué se anota días después?" }); just.value = previo?.justificacion || "";
@@ -607,8 +609,9 @@ function formRegistro(tipo, loteId, previo = null) {
     if (!fecha.value) { toast("Falta la fecha", true); return; }
     if (diasEntre(fecha.value, fechaLocal()) > 3 && !just.value.trim()) { toast("La labor tiene más de 3 días: escribe la justificación.", true); return; }
     const bloq = revisar(tipo, d, cat, l).find(a => a.nivel === "bloquea"); if (bloq) { toast(bloq.t, true); return; }
-    guardarRegistro({ tipo, loteId: l?.id || null, datos: d, fechaHecho: fecha.value, justificacion: just.value.trim(), fotos }, previo);
+    const nuevoId = guardarRegistro({ tipo, loteId: l?.id || null, datos: d, fechaHecho: fecha.value, justificacion: just.value.trim(), fotos }, previo);
     cerrarModal();
+    if (nuevoId && opts.alGuardar) opts.alGuardar(nuevoId);
   });
   abrirModal((previo ? "Corregir · " : "") + T.nombre, el("p", { class: "hint" }, l ? `${l.nombre} · ${l.ciclo || ""}` : "Bodega (no va a un lote)"), cont, bGuardar);
   pintarCalc();
@@ -664,6 +667,7 @@ function guardarRegistro({ tipo, loteId, datos, fechaHecho, justificacion, fotos
   auditar(ref.id, "crear", null, { datos, estado: reg.estado });
   if (S.admin) aplicarSiembra(reg);
   toast(navigator.onLine ? "Registro guardado" : "Guardado en el celular. Se envía cuando haya señal.");
+  return ref.id;
 }
 function auditar(registroId, accion, antes, despues, motivo = "") {
   setDoc(doc(collection(db, "auditoria")), { registroId, accion, motivo, uid: S.user.uid, nombre: S.perfil?.nombre || S.user.email,
@@ -850,6 +854,12 @@ function pintarPanel() {
 S.filtroGasto = "";
 function pintarGastos() {
   if (!S.admin) return;
+  const hechos = S.lista.filter(i => i.comprado).length;
+  const selector = el("div", { class: "seg seg-gastos", role: "tablist" },
+    el("button", { role: "tab", "aria-selected": S.vistaGastos === "gastos" ? "true" : "false", onclick: () => { S.vistaGastos = "gastos"; pintarGastos(); } }, "Gastos"),
+    el("button", { role: "tab", "aria-selected": S.vistaGastos === "lista" ? "true" : "false", onclick: () => { S.vistaGastos = "lista"; pintarGastos(); } },
+      "Lista de compras" + (S.lista.length ? ` · ${hechos}/${S.lista.length}` : "")));
+  if (S.vistaGastos === "lista") { $("gastosBody").replaceChildren(selector, ...pintarLista()); return; }
   const cat = catActual(), todosAp = S.registros.filter(r => r.estado === "aprobado");
   const inv = inventario(todosAp, cat), cs = costos(todosAp.filter(r => r.tipo !== "compra" || esEquipo(r.datos)), inv, precioGalon(todosAp, cat));
   const area = S.lotes.filter(l => !l.archivado).reduce((s, l) => s + (l.area_ha || 0), 0);
@@ -862,7 +872,7 @@ function pintarGastos() {
     .filter(r => !S.filtroGasto || (S.filtroGasto === "bodega" ? r.tipo === "compra" : r.datos?.categoria === S.filtroGasto));
   const cats = [...new Set(S.registros.filter(r => r.tipo === "gasto").map(r => r.datos?.categoria).filter(Boolean))];
   const chip = (k, t) => el("button", { "aria-pressed": S.filtroGasto === k ? "true" : "false", onclick: () => { S.filtroGasto = k; pintarGastos(); } }, t);
-  $("gastosBody").replaceChildren(
+  $("gastosBody").replaceChildren(selector,
     el("div", { class: "total-proyecto" }, el("span", {}, "Total gastado en el proyecto"), el("b", {}, pesos(cs.total + bodega)),
       el("span", {}, bodega > 0 ? `Incluye ${pesos(bodega)} en insumos que siguen en bodega. Costo de lo ya usado: ${pesos(cs.total)}.` : "Todo lo comprado ya se usó o es equipo."),
       el("span", {}, area ? `${pesos((cs.total + bodega) / area)} por hectárea sembrada (${num(area, 2)} ha)` : "Falta el área sembrada para sacar el valor por hectárea")),
@@ -879,6 +889,149 @@ function pintarGastos() {
     el("div", { class: "chips" }, chip("", "Todos"), chip("bodega", "Compras de bodega"), cats.map(c => chip(c, c.replace(/ \(.*/, "")))),
     movs.length ? el("div", { class: "list" }, movs.map(itemRegistro)) : el("div", { class: "empty" }, "No hay gastos aquí todavía. Agrega el primero con el botón de arriba."),
     el("p", { class: "hint" }, "Solo suman los gastos aprobados. Lo que registra el administrador se aprueba solo."));
+}
+
+// ---------- Lista de compras (vinculada a los registros) ----------
+let unsubLista = null;
+function escucharLista() {
+  if (unsubLista) return;
+  unsubLista = onSnapshot(collection(db, "lista"), snap => {
+    S.lista = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0));
+    S.listaCargada = !snap.metadata.fromCache || S.lista.length > 0;
+    pintarGastos();
+  }, err => { S.listaCargada = true; if (err.code === "permission-denied") S.listaSinPermiso = true; pintarGastos(); });
+  S.unsubs.push(() => { unsubLista && unsubLista(); unsubLista = null; });
+}
+const NOMBRE_SEC = Object.fromEntries(SECCIONES);
+const VERBO = { compra: "Registrar la compra", gasto: "Registrar el gasto", labor: "Registrar la labor", combustible: "Registrar el combustible" };
+const regDe = it => it.registroId ? S.registros.find(r => r.id === it.registroId) : null;
+function valorReg(r) {
+  if (!r || r.estado === "anulado" || r.estado === "rechazado") return 0;
+  if (r.tipo === "labor") return costos([r], {}, 0).total;
+  return Number(r.datos?.valor) || 0;
+}
+function guardarItem(id, cambios) {
+  return updateDoc(doc(db, "lista", id), { ...cambios, actualizado: serverTimestamp(), actualizadoPor: S.user.uid })
+    .catch(e => toast("No se guardó en la lista (" + e.code + ")", true));
+}
+function pintarLista() {
+  if (S.listaSinPermiso) return [el("div", { class: "calc warn" }, el("b", {}, "Falta publicar las reglas nuevas"),
+    el("span", {}, "La base de datos todavía no deja guardar la lista. Hay que publicar el archivo firestore.rules de la versión 0.8 en Firebase."))];
+  if (!S.lista.length) {
+    if (!S.listaCargada) return [el("div", { class: "empty" }, "Cargando la lista…")];
+    return [el("div", { class: "card" }, el("h3", {}, "Lista de compras del proyecto"),
+      el("p", { class: "hint" }, `Carga los ${LISTA_BASE.length} ítems de la plantilla (cerca, semilla, abono, fitosanitario, riego, cosecha y mano de obra). La semilla y la motobomba quedan marcadas como compradas. Después puedes agregar, editar o quitar ítems.`),
+      el("button", { class: "btn primary", onclick: cargarListaBase }, "Cargar la lista del proyecto"))];
+  }
+  const total = S.lista.length, hechos = S.lista.filter(i => i.comprado).length;
+  const gastado = S.lista.reduce((s, i) => s + valorReg(regDe(i)), 0);
+  const secs = [...SECCIONES.map(([k]) => k), ...new Set(S.lista.map(i => i.seccion).filter(k => !NOMBRE_SEC[k]))];
+  const out = [el("div", { class: "total-proyecto" }, el("span", {}, "Avance de compras"), el("b", {}, `${hechos} de ${total}`),
+    el("div", { class: "barra" }, el("i", { style: `width:${Math.round(100 * hechos / total)}%` })),
+    el("span", {}, gastado ? `${pesos(gastado)} registrados desde la lista. Toca un ítem para registrar su compra o vincularlo.` : "Toca un ítem para registrar su compra; el valor pasa a Gastos y a la bodega.")),
+    el("p", { class: "hint" }, "La lista es la misma en todos tus equipos. Lo marcado como «confirmar» depende del análisis de suelo o de una medida en el lote.")];
+  for (const k of secs) {
+    const its = S.lista.filter(i => i.seccion === k); if (!its.length) continue;
+    const n = its.filter(i => i.comprado).length;
+    const abierta = S.secAbierta?.[k] ?? n < its.length;
+    const det = el("details", { class: "lista-sec", open: abierta ? true : null },
+      el("summary", {}, el("span", { class: "lista-tit" }, NOMBRE_SEC[k] || k), el("span", { class: "lista-cnt" + (n === its.length ? " ok" : "") }, `${n} / ${its.length}`),
+        el("span", { class: "barra fina" }, el("i", { style: `width:${Math.round(100 * n / its.length)}%` }))),
+      el("ul", { class: "lista-items" }, its.map(filaLista)));
+    det.addEventListener("toggle", () => { (S.secAbierta ||= {})[k] = det.open; });
+    out.push(det);
+  }
+  out.push(el("div", { class: "row-btns" }, el("button", { class: "btn primary", onclick: () => formItem(null) }, "+ Agregar ítem")));
+  return out;
+}
+function filaLista(it) {
+  const r = regDe(it), cb = el("input", { type: "checkbox", "aria-label": "Comprado: " + it.nombre });
+  cb.checked = !!it.comprado;
+  cb.addEventListener("change", () => guardarItem(it.id, { comprado: cb.checked }));
+  const estado = r ? (r.estado === "anulado" || r.estado === "rechazado" ? `⚠ registro ${ESTADOS[r.estado].toLowerCase()}` : `✓ ${pesos(valorReg(r))} · ${fmtFecha(r.fechaHecho)}`) : it.registroId ? "Registro no encontrado" : "";
+  return el("li", { class: it.comprado ? "hecho" : "" }, cb,
+    el("button", { class: "lista-txt", type: "button", onclick: () => detalleItem(it.id) },
+      el("span", { class: "lista-nom" }, it.nombre, it.confirmar ? el("span", { class: "tag-conf" }, "confirmar") : null),
+      el("span", { class: "lista-det" }, it.detalle || ""),
+      estado ? el("span", { class: "lista-reg" + (r && r.estado !== "anulado" && r.estado !== "rechazado" ? "" : " mal") }, estado) : null));
+}
+async function cargarListaBase() {
+  if (S.lista.length) return;
+  if (!navigator.onLine) { toast("Necesitas señal para cargar la lista la primera vez.", true); return; }
+  try {
+    const b = writeBatch(db);
+    for (const it of LISTA_BASE) b.set(doc(collection(db, "lista")), { ...it, registroId: null, actualizado: serverTimestamp(), actualizadoPor: S.user.uid });
+    await b.commit(); toast("Lista cargada");
+  } catch (e) { if (e.code === "permission-denied") { S.listaSinPermiso = true; pintarGastos(); } else toast("No se pudo cargar (" + e.code + ")", true); }
+}
+function conLote(fn) {
+  const ls = lotesVisibles();
+  if (ls.length === 1) return fn(ls[0].id);
+  if (!ls.length) { toast("Primero crea un lote.", true); return; }
+  abrirModal("¿En qué lote?", el("div", { class: "tipos" }, ls.map(l => el("button", { onclick: () => fn(l.id) }, el("b", {}, l.nombre)))));
+}
+function registrarDesdeLista(it) {
+  const T = TIPOS[it.tipo]; if (!T) return;
+  const ini = { ...(it.pre || {}) };
+  if (it.tipo === "gasto" && !ini.descripcion) ini.descripcion = it.nombre;
+  if (it.tipo === "compra" && !ini.producto) delete ini.producto;
+  const obs = it.detalle ? `Lista de compras: ${it.nombre} (${it.detalle})` : `Lista de compras: ${it.nombre}`;
+  if (T.campos.some(c => c.k === "obs")) ini.obs = obs;
+  const opts = { inicial: ini, alGuardar: id => guardarItem(it.id, { registroId: id, comprado: true }) };
+  if (T.sinLote) formRegistro(it.tipo, null, null, opts); else conLote(lid => formRegistro(it.tipo, lid, null, opts));
+}
+function detalleItem(id) {
+  const it = S.lista.find(i => i.id === id); if (!it) return;
+  const r = regDe(it), partes = [];
+  partes.push(el("dl", { class: "kv" }, el("dt", {}, "Sección"), el("dd", {}, NOMBRE_SEC[it.seccion] || it.seccion), el("dt", {}, "Cantidad o nota"), el("dd", {}, it.detalle || "—"),
+    el("dt", {}, "Estado"), el("dd", {}, it.comprado ? "Comprado" : "Por comprar"), el("dt", {}, "Va a"), el("dd", {}, it.tipo ? TIPOS[it.tipo].nombre : "Se anota en la jornada de riego o de combustible")));
+  if (r) {
+    partes.push(el("div", { class: "card" }, el("h3", {}, "Registro vinculado"), itemRegistro(r),
+      el("button", { class: "btn small", onclick: () => { guardarItem(it.id, { registroId: null }); cerrarModal(); toast("Registro desvinculado (el registro no se borra)"); } }, "Desvincular")));
+  } else {
+    if (it.registroId) partes.push(el("p", { class: "hint" }, "El registro vinculado no aparece (quizá no ha sincronizado)."));
+    if (it.tipo) partes.push(el("button", { class: "btn primary", onclick: () => { cerrarModal(); registrarDesdeLista(it); } }, VERBO[it.tipo]));
+    partes.push(el("button", { class: "btn", onclick: () => vincularRegistro(it) }, "Vincular a un registro ya hecho"));
+  }
+  partes.push(el("div", { class: "row-btns" },
+    el("button", { class: "btn", onclick: () => { guardarItem(it.id, { comprado: !it.comprado }); cerrarModal(); } }, it.comprado ? "Marcar por comprar" : "Marcar comprado"),
+    el("button", { class: "btn", onclick: () => formItem(it) }, "Editar"),
+    el("button", { class: "btn danger", onclick: () => { if (!confirmar(`¿Quitar «${it.nombre}» de la lista? Los registros no se borran.`)) return; deleteDoc(doc(db, "lista", it.id)).catch(e => toast("No se pudo (" + e.code + ")", true)); cerrarModal(); } }, "Quitar")));
+  abrirModal(it.nombre, ...partes);
+}
+function vincularRegistro(it) {
+  const usados = new Set(S.lista.map(i => i.registroId).filter(Boolean));
+  const tipos = it.tipo ? [it.tipo] : ["compra", "gasto", "combustible", "labor"];
+  const cands = S.registros.filter(r => tipos.includes(r.tipo) && vigente(r) && !usados.has(r.id));
+  abrirModal("Vincular · " + it.nombre, cands.length ? el("div", { class: "list" }, cands.slice(0, 60).map(r => {
+    const b = itemRegistro(r); b.onclick = null;
+    b.addEventListener("click", ev => { ev.stopImmediatePropagation(); guardarItem(it.id, { registroId: r.id, comprado: true }); cerrarModal(); toast("Vinculado"); }, true);
+    return b;
+  })) : el("div", { class: "empty" }, `No hay registros de ${tipos.map(t => TIPOS[t].nombre.toLowerCase()).join(", ")} sin vincular.`));
+}
+function formItem(it) {
+  const v = it || { seccion: "otros", nombre: "", detalle: "", confirmar: false };
+  const n = el("input", { id: "liNom", type: "text", maxlength: "120" }); n.value = v.nombre;
+  const d = el("input", { id: "liDet", type: "text", maxlength: "200", placeholder: "Ej.: 4 und · una por sección" }); d.value = v.detalle || "";
+  const s = el("select", { id: "liSec" }, SECCIONES.map(([k, t]) => el("option", { value: k }, t))); s.value = NOMBRE_SEC[v.seccion] ? v.seccion : "otros";
+  const t = el("select", { id: "liTipo" }, el("option", { value: "compra" }, "Compra de insumos (entra a bodega)"), el("option", { value: "gasto" }, "Gasto del proyecto"),
+    el("option", { value: "labor" }, "Labor (jornales o tractor)"), el("option", { value: "combustible" }, "Combustible"), el("option", { value: "" }, "No se registra desde la lista"));
+  t.value = it ? (it.tipo || "") : tipoPorSeccion(s.value);
+  if (!it) s.addEventListener("change", () => { t.value = tipoPorSeccion(s.value); });
+  const cf = el("input", { type: "checkbox", id: "liConf" }); cf.checked = !!v.confirmar;
+  abrirModal(it ? "Editar ítem" : "Nuevo ítem", el("label", { for: "liNom" }, "Qué hay que comprar", n), el("label", { for: "liDet" }, "Cantidad o nota", d),
+    el("div", { class: "grid2" }, el("label", { for: "liSec" }, "Sección", s), el("label", { for: "liTipo" }, "Se registra como", t)),
+    el("label", { for: "liConf", class: "check-row" }, cf, el("span", {}, "Por confirmar (depende de una medida o del análisis)")),
+    el("button", { class: "btn primary", onclick: () => {
+      const nombre = n.value.trim(); if (!nombre) { toast("Escribe qué hay que comprar", true); return; }
+      const tipo = t.value || null;
+      const pre = tipo === "gasto" ? { categoria: RUBRO_POR_SECCION[s.value] || "Otros", descripcion: nombre } : tipo === "compra" ? { producto: nombre } : tipo === "combustible" ? { combustible: "ACPM" } : {};
+      const datos = { nombre, detalle: d.value.trim(), seccion: s.value, confirmar: cf.checked, tipo };
+      if (it) { if (it.tipo !== tipo || it.nombre !== nombre) datos.pre = pre; guardarItem(it.id, datos); }
+      else setDoc(doc(collection(db, "lista")), { ...datos, pre, comprado: false, registroId: null, orden: Math.max(0, ...S.lista.map(i => i.orden ?? 0)) + 1,
+        actualizado: serverTimestamp(), actualizadoPor: S.user.uid }).catch(e => toast("No se guardó (" + e.code + ")", true));
+      cerrarModal(); toast(it ? "Ítem actualizado" : "Ítem agregado");
+    } }, it ? "Guardar" : "Agregar a la lista"));
 }
 
 function exportarCsv() {

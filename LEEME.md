@@ -1,5 +1,7 @@
 # Control Agrícola · AeroCAS — cómo ponerla a funcionar
 
+Versión 0.8 (27-oct-2026): lista de compras del proyecto dentro de la pestaña Gastos, guardada en la nube y vinculada a los registros (al registrar la compra desde la lista, el valor pasa a Gastos o a la bodega y el ítem queda marcado). Requiere publicar el `firestore.rules` nuevo (agrega la colección `lista`).
+
 Versión 0.7 (25-oct-2026): todo lo de la 0.6 más seguridad: política de seguridad del contenido (solo carga código de los sitios autorizados), huellas de integridad de las librerías externas, la app no aparece en buscadores, al cerrar sesión se borran del celular los datos guardados, reglas de la base de datos más estrictas y aviso de derechos reservados (archivo LICENSE).
 
 ## Paso 1 · Pegar las reglas de seguridad (5 min)
