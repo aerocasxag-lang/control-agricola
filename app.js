@@ -12,9 +12,10 @@ import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, v
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir, compararVigor, kmlCeldas } from "./orto.js";
 import { CRONO } from "./cronograma.js";
+import { libroXlsx } from "./excel.js";
 import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.11 · 27-oct-2026";
+const VERSION = "0.12 · 27-oct-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -118,7 +119,7 @@ onAuthStateChanged(auth, async user => {
       setDoc(doc(db, "usuarios", user.uid), { nombre: "Jorge Andrés Herrera", correo: user.email, rol: "admin", activo: true, creado: serverTimestamp() });
     }
     $("tabPanel").hidden = !S.admin; $("tabGastos").hidden = !S.admin;
-    pintarYo(); escucharRegistros(); if (S.admin) escucharLista();
+    pintarYo(); escucharRegistros(); if (S.admin) { escucharLista(); escucharRespaldo(); }
   }, () => {}));
   // Lotes
   S.unsubs.push(onSnapshot(collection(db, "lotes"), snap => {
@@ -483,7 +484,8 @@ function descargarKml(l) {
   descargar(`${l.nombre.replace(/[^\w-]+/g, "_")}.kml`, kml, "application/vnd.google-earth.kml+xml");
 }
 function descargar(nombre, contenido, tipo) {
-  const a = el("a", { href: URL.createObjectURL(new Blob([contenido], { type: tipo })), download: nombre }); document.body.append(a); a.click(); a.remove();
+  const url = URL.createObjectURL(contenido instanceof Blob ? contenido : new Blob([contenido], { type: tipo }));
+  const a = el("a", { href: url, download: nombre }); document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 // Lista de lotes
@@ -918,6 +920,10 @@ function alertas() {
     for (const f of Object.values(inv)) if (f.bajo) out.push({ t: `Bodega: ${f.producto} por debajo del mínimo (quedan ${num(f.saldo, 1)} ${f.base})`, go: () => irA("panel") });
   }
   out.push(...alertasAgenda());
+  if (S.admin && S.respaldoLeido && S.registros.length) {
+    const d = S.respaldo?.fecha ? diasEntre(S.respaldo.fecha, fechaLocal()) : null;
+    if (d == null || d >= 7) out.push({ t: d == null ? "Haz la primera copia de seguridad de la app" : `Copia de seguridad semanal: la última fue hace ${d} días`, go: formCopia });
+  }
   if (S.pendientesSync) out.unshift({ t: `${S.pendientesSync} registro(s) guardados en el celular, sin enviar`, go: () => {} });
   return out;
 }
@@ -988,7 +994,10 @@ function pintarPanel() {
     Object.keys(porPlaga).length ? tabla(["Plaga", "Último", "Máximo", "Umbral"], Object.entries(porPlaga).map(([k, p]) => ({ cls: p.ult.datos.sobreUmbral ? "fila-alerta" : "",
       c: [`${k} (${p.n})`, `${num(p.ult.datos.pct, 1)} % · ${fmtFecha(p.ult.fechaHecho)}`, num(p.max, 1) + " %", p.ult.datos.umbral + " %"] }))) : el("p", { class: "hint" }, "Sin monitoreos aprobados."));
   $("panelExtra").replaceChildren(cardRendimiento(sel.value, areaSemb, cs.total), cardCostos, cardInv, cardFert, cardFum, cardPlagas,
-    el("div", { class: "card" }, el("h3", {}, "Exportar"), el("p", { class: "hint" }, "Todos los registros aprobados en CSV (se abre en Excel), con el costo de cada uno."), el("button", { class: "btn", onclick: exportarCsv }, "Descargar CSV")),
+    el("div", { class: "card" }, el("h3", {}, "Exportar"),
+      el("p", { class: "hint" }, "Excel con formato: resumen, registros, costos por rubro, gastos y compras, bodega, fumigaciones, monitoreo de plagas, agenda y lista de compras."),
+      el("div", { class: "row-btns" }, el("button", { class: "btn primary", onclick: ev => exportarExcel(ev.currentTarget) }, "Descargar Excel"), el("button", { class: "btn", onclick: exportarCsv }, "CSV simple")),
+      el("button", { class: "btn", onclick: formCopia }, "Copia de seguridad")),
     el("p", { class: "hint" }, "Solo cuentan los registros aprobados."));
 }
 // ---------- Rendimiento estimado (hoja Produccion de la plantilla + aforo + cosecha real) ----------
@@ -1104,6 +1113,12 @@ function pintarGastos() {
     el("p", { class: "hint" }, "Solo suman los gastos aprobados. Lo que registra el administrador se aprueba solo."));
 }
 
+let unsubResp = null;
+function escucharRespaldo() {
+  if (unsubResp) return;
+  unsubResp = onSnapshot(doc(db, "config", "respaldo"), snap => { S.respaldo = snap.exists() ? snap.data() : null; S.respaldoLeido = !snap.metadata?.fromCache; pintarAlertas(); if (S.admin) pintarYo(); }, () => {});
+  S.unsubs.push(() => { unsubResp && unsubResp(); unsubResp = null; });
+}
 // ---------- Lista de compras (vinculada a los registros) ----------
 let unsubLista = null;
 function escucharLista() {
@@ -1247,6 +1262,116 @@ function formItem(it) {
     } }, it ? "Guardar" : "Agregar a la lista"));
 }
 
+// ---------- Excel con formato y copia de seguridad ----------
+const H = t => ({ v: t, s: "h" }), P = v => ({ v: v == null || !isFinite(v) ? null : Math.round(v), s: "$" }), F = v => ({ v, s: "f" }), N2 = v => ({ v: v == null || !isFinite(v) ? null : Math.round(v * 100) / 100, s: "n" });
+function costoReg(r, inv, pGal) { return r.tipo === "compra" || r.tipo === "gasto" ? Number(r.datos?.valor) || 0 : costos([r], inv, pGal).total; }
+function hojasExcel() {
+  const cat = catActual(), todos = S.registros.filter(r => r.estado !== "anulado" && r.estado !== "rechazado"), ap = todos.filter(r => r.estado === "aprobado");
+  const inv = inventario(ap, cat), pGal = precioGalon(ap, cat), cs = costos(ap.filter(r => r.tipo !== "compra" || esEquipo(r.datos)), inv, pGal);
+  const bodega = Object.values(inv).reduce((s, f) => s + (f.costoProm != null ? Math.max(f.saldo, 0) * f.costoProm : 0), 0);
+  const lotes = S.lotes.filter(l => !l.archivado), area = lotes.reduce((s, l) => s + (l.area_ha || 0), 0), prod = cat.produccion || PROD_DEFECTO;
+  const hoy = fechaLocal(), est = area ? estimar({ area, fv1: prod.rend[1], reb: prod.rebrote[1], perd: prod.perdidas[1], prod }) : null;
+  const tSilo = ap.filter(r => r.tipo === "cosecha").reduce((s, r) => s + (Number(r.datos?.tSilo) || 0), 0);
+  // 1. Resumen
+  const res = [[{ v: "Control Agrícola · AeroCAS — resumen del proyecto", s: "t" }], [`Generado el ${fmtFecha(hoy)} por ${S.perfil?.nombre || S.user.email}. Solo cuentan los registros aprobados.`], [],
+    [H("Lote"), H("Finca"), H("Área sembrada (ha)"), H("Siembra"), H("Día desde la siembra"), H("Ciclo"), H("Corte previsto")],
+    ...lotes.map(l => [l.nombre, l.finca || "", N2(l.area_ha), F(l.fechaSiembra), l.fechaSiembra ? diasEntre(l.fechaSiembra, hoy) : null, l.ciclo || "", F(l.fechaCorte)]), [],
+    [H("Plata"), H("Valor")], ["Costo de lo ya usado", P(cs.total)], ["Insumos que siguen en bodega", P(bodega)], [{ v: "Total gastado", s: "b" }, { v: Math.round(cs.total + bodega), s: "$b" }],
+    ["Por hectárea sembrada", P(area ? (cs.total + bodega) / area : null)], [],
+    [H("Producción"), H("Valor")], ["Silo estimado del ciclo, escenario medio (t)", N2(est?.silo)], ["Para vender, escenario medio (t)", N2(est?.venta)], ["Ingreso estimado, escenario medio", P(est?.ingreso)],
+    ["Silo cosechado real (t)", N2(tSilo)], ["Costo por tonelada cosechada", P(tSilo ? cs.total / tSilo : null)]];
+  // 2. Registros
+  const regs = [[H("Fecha"), H("Tipo"), H("Lote"), H("Ciclo"), H("Detalle"), H("Costo"), H("Estado"), H("Registrado por"), H("Observaciones")],
+    ...todos.slice().sort((a, b) => (a.fechaHecho || "").localeCompare(b.fechaHecho || "")).map(r => [F(r.fechaHecho), TIPOS[r.tipo]?.nombre || r.tipo, r.loteNombre || "", r.ciclo || "",
+      { v: resumen(r), s: "w" }, P(r.estado === "aprobado" ? costoReg(r, inv, pGal) : null), ESTADOS[r.estado] || r.estado, r.autorNombre || "", { v: r.datos?.obs || "", s: "w" }])];
+  // 3. Costos por rubro
+  const rub = [["Insumos aplicados (abono, semilla, agroquímicos)", cs.insumos], ["Labores (jornales y tractor)", cs.labores], ["Aplicaciones (dron, camioneta, fumigadores)", cs.aplicaciones],
+    ["Combustible de equipos", cs.combustible], ["Gasolina de riego", cs.gasolinaRiego], ["Equipos y herramientas", cs.equipos], ...Object.entries(cs.porCategoria).sort((a, b) => b[1] - a[1])].filter(([, v]) => v > 0);
+  const costosH = [[H("Rubro"), H("Valor"), H("% del total")], ...rub.map(([k, v]) => [k, P(v), { v: cs.total ? Math.round(v / cs.total * 1000) / 10 : 0, s: "n" }]),
+    [{ v: "Costo de lo ya usado", s: "b" }, { v: Math.round(cs.total), s: "$b" }], ["Insumos en bodega", P(bodega)], [{ v: "Total gastado", s: "b" }, { v: Math.round(cs.total + bodega), s: "$b" }]];
+  // 4. Gastos y compras
+  const movs = todos.filter(r => r.tipo === "gasto" || r.tipo === "compra").sort((a, b) => (a.fechaHecho || "").localeCompare(b.fechaHecho || ""));
+  const gastos = [[H("Fecha"), H("Tipo"), H("Rubro o producto"), H("Descripción"), H("Cantidad"), H("Unidad"), H("Valor pagado"), H("Proveedor"), H("Factura"), H("Estado")],
+    ...movs.map(r => { const d = r.datos || {}; return [F(r.fechaHecho), r.tipo === "compra" ? (esEquipo(d) ? "Equipo" : "Compra de bodega") : "Gasto", r.tipo === "compra" ? d.producto : (d.categoria || ""),
+      r.tipo === "compra" ? "" : (d.descripcion || ""), N2(d.cantidad), d.unidad || "", P(d.valor), d.proveedor || "", d.factura || "", ESTADOS[r.estado] || r.estado]; }),
+    [{ v: "Total aprobado", s: "b" }, "", "", "", "", "", { v: Math.round(movs.filter(r => r.estado === "aprobado").reduce((s, r) => s + (Number(r.datos?.valor) || 0), 0)), s: "$b" }]];
+  // 5. Bodega
+  const bod = [[H("Producto"), H("Unidad"), H("Comprado"), H("Aplicado"), H("Saldo"), H("Costo promedio"), H("Valor del saldo"), H("Alerta")],
+    ...Object.values(inv).sort((a, b) => a.producto.localeCompare(b.producto)).map(f => [f.producto, f.base, N2(f.comprado), N2(f.aplicado), N2(f.saldo), P(f.costoProm),
+      P(f.costoProm != null ? Math.max(f.saldo, 0) * f.costoProm : null), f.saldo < 0 ? "Se aplicó más de lo comprado" : f.bajo ? "Bajo el mínimo" : f.mezcla ? "Unidades mezcladas" : ""])];
+  // 6. Fitosanitario y monitoreo
+  const fum = [[H("Fecha"), H("Lote"), H("Productos y dosis"), H("Área (ha)"), H("Método"), H("Carencia (días)"), H("Sin cortar hasta"), H("Costo"), H("Estado")],
+    ...todos.filter(r => r.tipo === "fumigacion").sort((a, b) => a.fechaHecho.localeCompare(b.fechaHecho)).map(r => { const d = r.datos || {};
+      return [F(r.fechaHecho), r.loteNombre, { v: fmtDosis(d.productos), s: "w" }, N2(d.area), d.metodo || "", d.carencia ?? null, F(d.fechaLibre), P(r.estado === "aprobado" ? costoReg(r, inv, pGal) : null), ESTADOS[r.estado]]; })];
+  const mon = [[H("Fecha"), H("Lote"), H("Plaga"), H("Revisadas"), H("Afectadas"), H("% afectado"), H("Umbral %"), H("¿Pasó el umbral?")],
+    ...todos.filter(r => r.tipo === "plaga").sort((a, b) => a.fechaHecho.localeCompare(b.fechaHecho)).map(r => { const d = r.datos || {};
+      return [F(r.fechaHecho), r.loteNombre, d.plaga, d.revisadas ?? null, d.afectadas ?? null, N2(d.pct), d.umbral ?? null, d.sobreUmbral ? "Sí" : "No"]; })];
+  // 7. Agenda
+  const ESTX = { hecha: "Hecha", omitida: "No fue necesaria", noaplica: "No aplica", atrasada: "Atrasada", hoy: "Hoy", pronto: "Próxima", futura: "Pendiente" };
+  const ag = [[H("Lote"), H("Fecha"), H("Hasta"), H("Día"), H("Labor"), H("Tipo"), H("Estado"), H("Quién o con qué")]];
+  for (const l of lotes) for (const it of agenda(l) || []) ag.push([l.nombre, F(it.fecha), F(it.fin), etiquetaDia(it), { v: it.act, s: "w" }, it.tipo === "fija" ? "Fija" : it.tipo === "cond" ? "Condicional" : "Labor", ESTX[it.estado] || it.estado, it.resp || ""]);
+  // 8. Lista de compras
+  const NS = Object.fromEntries(SECCIONES);
+  const lis = [[H("Sección"), H("Ítem"), H("Cantidad o nota"), H("Comprado"), H("Valor registrado"), H("Fecha del registro"), H("Por confirmar")],
+    ...S.lista.map(i => { const r = regDe(i); return [NS[i.seccion] || i.seccion, i.nombre, i.detalle || "", i.comprado ? "Sí" : "No", P(r ? valorReg(r) : null), F(r?.fechaHecho), i.confirmar ? "Sí" : ""]; })];
+  const hojas = [
+    { nombre: "Resumen", filas: res, anchos: [44, 18, 18, 14, 14, 12, 14] },
+    { nombre: "Registros", filas: regs, anchos: [11, 20, 18, 11, 60, 14, 12, 22, 40], fijar: 1, filtro: 1 },
+    { nombre: "Costos por rubro", filas: costosH, anchos: [52, 16, 12], fijar: 1 },
+    { nombre: "Gastos y compras", filas: gastos, anchos: [11, 16, 30, 36, 10, 10, 15, 24, 14, 12], fijar: 1, filtro: 1 },
+    { nombre: "Bodega", filas: bod, anchos: [28, 8, 12, 12, 12, 15, 16, 26], fijar: 1, filtro: 1 },
+    { nombre: "Fumigaciones", filas: fum, anchos: [11, 18, 50, 10, 16, 10, 14, 14, 12], fijar: 1, filtro: 1 },
+    { nombre: "Monitoreo de plagas", filas: mon, anchos: [11, 18, 30, 10, 10, 11, 10, 12], fijar: 1, filtro: 1 },
+    { nombre: "Agenda", filas: ag, anchos: [18, 11, 11, 11, 60, 12, 16, 30], fijar: 1, filtro: 1 }];
+  if (S.lista.length) hojas.push({ nombre: "Lista de compras", filas: lis, anchos: [24, 40, 36, 10, 16, 14, 12], fijar: 1, filtro: 1 });
+  return hojas;
+}
+async function exportarExcel(btn) {
+  try { if (btn) btn.disabled = true; const blob = await libroXlsx(hojasExcel()); descargar(`control_agricola_${fechaLocal()}.xlsx`, blob, blob.type); toast("Excel descargado"); }
+  catch (e) { toast("No se pudo armar el Excel: " + (e.message || e), true); } finally { if (btn) btn.disabled = false; }
+}
+// Copia de seguridad: un ZIP con todos los datos (JSON), el Excel y, si se pide, las fotos.
+const dataUrlABytes = u => { const b = atob(u.split(",")[1] || ""); const a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; };
+async function copiaSeguridad(conFotos, estado) {
+  if (!navigator.onLine) { toast("Necesitas señal para hacer la copia completa.", true); return; }
+  const z = new JSZip(), datos = { app: "Control Agrícola · AeroCAS", version: VERSION, fecha: new Date().toISOString(), por: S.user.email, colecciones: {} };
+  const leer = async c => (await getDocs(collection(db, c))).docs.map(d => ({ id: d.id, ...d.data() }));
+  for (const c of ["lotes", "registros", "config", "lista", "usuarios", "auditoria", "ortos"]) {
+    estado(`Leyendo ${c}…`);
+    try { datos.colecciones[c] = await leer(c); } catch (e) { datos.colecciones[c] = { error: e.code || String(e) }; }
+  }
+  // los ortomosaicos pesan mucho: la copia guarda su ficha y el vigor, no la imagen
+  z.file("datos.json", JSON.stringify(datos, (k, v) => v && typeof v === "object" && typeof v.toDate === "function" ? v.toDate().toISOString() : v, 1));
+  estado("Armando el Excel…"); z.file(`control_agricola_${fechaLocal()}.xlsx`, await libroXlsx(hojasExcel()));
+  let nf = 0;
+  if (conFotos) {
+    estado("Leyendo fotos…");
+    try { for (const f of await leer("fotos")) if (typeof f.data === "string" && f.data.startsWith("data:image/")) { z.file(`fotos/${f.id}.${f.data.startsWith("data:image/png") ? "png" : "jpg"}`, dataUrlABytes(f.data)); nf++; } }
+    catch (e) { estado("No se pudieron leer las fotos (" + (e.code || e) + ")"); }
+  }
+  z.file("LEEME.txt", `Copia de seguridad de Control Agrícola · AeroCAS\nFecha: ${new Date().toLocaleString("es-CO")}\nVersión de la app: ${VERSION}\n\n- datos.json: todos los lotes, registros, catálogos, lista de compras, usuarios, historial de cambios y fichas de los ortomosaicos (sin la imagen).\n- El Excel con el resumen y las tablas.\n${conFotos ? `- fotos/: ${nf} fotos de los registros (el nombre es el id que aparece en datos.json).\n` : ""}\nGuárdala fuera del celular (computador, USB o Google Drive). Contiene datos privados del proyecto.\n`);
+  estado("Comprimiendo…");
+  const blob = await z.generateAsync({ type: "blob", compression: "DEFLATE" });
+  descargar(`copia_control_agricola_${fechaLocal()}.zip`, blob, "application/zip");
+  setDoc(doc(db, "config", "respaldo"), { fecha: fechaLocal(), en: serverTimestamp(), uid: S.user.uid, registros: datos.colecciones.registros?.length ?? null, fotos: conFotos ? nf : null }).catch(() => {});
+  return { registros: datos.colecciones.registros?.length, nf, kb: Math.round(blob.size / 1024) };
+}
+function formCopia() {
+  const chk = el("input", { type: "checkbox", id: "cpFotos" }); chk.checked = true;
+  const est = el("p", { class: "hint", "aria-live": "polite" }, S.respaldo?.fecha ? `Última copia: ${fmtFecha(S.respaldo.fecha)} (hace ${diasEntre(S.respaldo.fecha, fechaLocal())} días).` : "Todavía no has hecho ninguna copia.");
+  const b = el("button", { class: "btn primary" }, "Descargar copia ahora");
+  b.addEventListener("click", async () => {
+    b.disabled = true;
+    try { const r = await copiaSeguridad(chk.checked, t => est.textContent = t); if (r) { est.textContent = `Listo: ${r.registros} registros${chk.checked ? `, ${r.nf} fotos` : ""} · ${r.kb} KB. Guárdala fuera del celular.`; toast("Copia descargada"); } }
+    catch (e) { est.textContent = "No se pudo: " + (e.message || e.code || e); } finally { b.disabled = false; }
+  });
+  abrirModal("Copia de seguridad",
+    el("p", {}, "Descarga un ZIP con todos los datos de la app (lotes, registros, catálogos, lista de compras, usuarios e historial) y el Excel. Hazla cada semana y guárdala fuera del celular: en el computador, una USB o Google Drive."),
+    el("label", { for: "cpFotos", class: "check-row" }, chk, el("span", {}, "Incluir las fotos de los registros (pesa más)")),
+    el("p", { class: "hint" }, "Las imágenes de los ortomosaicos no entran: ya las tienes en tu computador. Sí entran su fecha y el análisis de vigor."),
+    est, b);
+}
+
 function exportarCsv() {
   const todosAp = S.registros.filter(r => r.estado === "aprobado"), cat = catActual();
   const inv = inventario(todosAp, cat), pGal = precioGalon(todosAp, cat);
@@ -1274,7 +1399,9 @@ function pintarYo() {
   $("yoAdmin").replaceChildren(
     el("div", { class: "card" }, el("h3", {}, "Lotes"), el("div", { class: "row-btns" }, el("button", { class: "btn", onclick: listaLotes }, "Ver lotes"), el("button", { class: "btn primary", onclick: () => formLote(null) }, "+ Nuevo lote"))),
     el("div", { class: "card" }, el("h3", {}, "Usuarios"), el("div", { class: "row-btns" }, el("button", { class: "btn", onclick: listaUsuarios }, "Ver usuarios"), el("button", { class: "btn primary", onclick: formUsuario }, "+ Trabajador"))),
-    el("div", { class: "card" }, el("h3", {}, "Catálogos"), el("p", { class: "hint" }, "Productos con tipo, unidad, carencia y mínimo en bodega; equipos; plagas con su umbral; precio del galón."), el("button", { class: "btn", onclick: formCatalogos }, "Editar catálogos")));
+    el("div", { class: "card" }, el("h3", {}, "Catálogos"), el("p", { class: "hint" }, "Productos con tipo, unidad, carencia y mínimo en bodega; equipos; plagas con su umbral; precio del galón."), el("button", { class: "btn", onclick: formCatalogos }, "Editar catálogos")),
+    el("div", { class: "card" }, el("h3", {}, "Copia de seguridad"), el("p", { class: "hint" }, S.respaldo?.fecha ? `Última: ${fmtFecha(S.respaldo.fecha)}. Hazla cada semana.` : "Aún no has hecho ninguna. Hazla cada semana."),
+      el("div", { class: "row-btns" }, el("button", { class: "btn primary", onclick: formCopia }, "Hacer copia"), el("button", { class: "btn", onclick: ev => exportarExcel(ev.currentTarget) }, "Solo el Excel"))));
 }
 async function listaUsuarios() {
   try {

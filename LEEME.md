@@ -1,5 +1,7 @@
 # Control Agrícola · AeroCAS — cómo ponerla a funcionar
 
+Versión 0.12 (27-oct-2026): Excel con formato desde el Panel (resumen, registros, costos por rubro, gastos y compras, bodega, fumigaciones, monitoreo de plagas, agenda y lista de compras) y copia de seguridad en Yo (ZIP con todos los datos en JSON, el Excel y las fotos); la campana recuerda la copia cada 7 días. Se arma en el celular con JSZip, sin librerías nuevas. No necesita reglas nuevas.
+
 Versión 0.11 (27-oct-2026): comparación de vigor entre vuelos en la pestaña Vigor del lote (sigue débil, nueva zona débil, se recuperó), capa de cambios en el mapa y KML de zonas a revisar. Cada ortomosaico nuevo guarda una cuadrícula de cobertura amarrada al borde del lote; los subidos antes de la 0.11 hay que volver a subirlos para compararlos. No necesita reglas nuevas.
 
 Versión 0.10 (27-oct-2026): rendimiento estimado del ciclo en el Panel (escenarios conservador, medio y optimista de la plantilla; columna de aforo de campo y de corte real cuando existen; población contra el objetivo de plantas por metro; costo por tonelada). Aforo opcional en la inspección (kg cortados en N metros de surco). Distancia entre surcos por lote. Supuestos editables. No necesita reglas nuevas.
