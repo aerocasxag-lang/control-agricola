@@ -10,11 +10,11 @@ import { areaHa, parseKml, centroide, fechaLocal, diasEntre, comprimirFoto, csvE
 import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, vistaCalculo, revisar, resumen, filasCalculadas, fmtDosis,
   inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO, PROD_DEFECTO, ESCENARIOS, aforoTHa, estimar } from "./modulos.js";
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
-import { procesarGeoTiff, partir } from "./orto.js";
+import { procesarGeoTiff, partir, compararVigor, kmlCeldas } from "./orto.js";
 import { CRONO } from "./cronograma.js";
 import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.10 · 27-oct-2026";
+const VERSION = "0.11 · 27-oct-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -312,7 +312,50 @@ function segVigor(l) {
     el("dl", { class: "kv" }, kv.flatMap(([a, b]) => [el("dt", {}, a), el("dd", {}, b)])),
     el("div", { class: "leyenda" }, el("span", { class: "sw", style: "background:#D63027" }), "Débil", el("span", { class: "sw", style: "background:#F7E878" }), "Poca cobertura", el("span", { class: "sw", style: "background:#2F9828" }), "Buena cobertura"),
     el("button", { class: "btn " + (S.verVigor ? "" : "primary"), onclick: () => { S.verVigor = !S.verVigor; mostrarCapasLote(l.id); pintarSeg(); } }, S.verVigor ? "Ocultar vigor del mapa" : "Ver vigor en el mapa"),
-    el("p", { class: "hint" }, "Una celda débil es una alerta para ir a mirar: falta de agua, mala germinación, plaga o encharcamiento. La causa se confirma en el campo y se anota como registro."));
+    el("p", { class: "hint" }, "Una celda débil es una alerta para ir a mirar: falta de agua, mala germinación, plaga o encharcamiento. La causa se confirma en el campo y se anota como registro."),
+    bloqueComparar(l, o));
+}
+// ---------- Comparar el vigor entre dos vuelos ----------
+let capaComp = null;
+function quitarComp() { if (capaComp && mapa) { mapa.removeLayer(capaComp); } capaComp = null; }
+function bloqueComparar(l, o) {
+  const otros = ortosDe(l.id).filter(x => x.id !== o.id && (x.fecha || "") <= (o.fecha || ""));
+  const caja = el("div", { class: "card" }, el("h3", {}, "Comparar con otro vuelo"));
+  if (!otros.length) { caja.append(el("p", { class: "hint" }, "Cuando subas el siguiente vuelo de este lote podrás ver qué zonas empeoraron, cuáles siguen débiles y cuáles se recuperaron.")); return caja; }
+  if (!o.vigor?.grid) { caja.append(el("p", { class: "hint" }, "Este vuelo se subió antes de la versión 0.11 y no tiene la cuadrícula para comparar. Vuelve a subirlo (el mismo GeoTIFF) para activar la comparación.")); return caja; }
+  const sel = el("select", { id: "cmpCon", "aria-label": "Vuelo anterior" }, otros.map(x => el("option", { value: x.id }, `Vuelo del ${fmtFecha(x.fecha)}${x.vigor?.grid ? "" : " (volver a subir)"}`)));
+  if (S.cmp?.nuevoId === o.id && otros.some(x => x.id === S.cmp.viejoId)) sel.value = S.cmp.viejoId;
+  const res = el("div", { style: "display:grid;gap:10px" });
+  const correr = () => {
+    const v = otros.find(x => x.id === sel.value); quitarComp();
+    if (!v?.vigor?.grid) { res.replaceChildren(el("p", { class: "hint" }, "Ese vuelo se subió antes de la versión 0.11. Vuelve a subirlo para poder compararlo.")); S.cmp = null; return; }
+    const c = compararVigor(o, v); if (!c) return;
+    S.cmp = { loteId: l.id, nuevoId: o.id, viejoId: v.id, res: c };
+    const dias = diasEntre(v.fecha, o.fecha), ha = x => num(x, 2) + " ha";
+    const kv = [["Entre vuelos", `${fmtFecha(v.fecha)} → ${fmtFecha(o.fecha)} (${dias} días)`],
+      ["Cobertura mediana", c.viejoSinCultivo ? `sin cultivo → ${num(c.medianaNueva, 0)} %` : `${num(c.medianaVieja, 0)} % → ${num(c.medianaNueva, 0)} %`],
+      ["Siguen débiles", `${c.cuenta[2]} celdas · ${ha(c.ha[2])}`], ["Nuevas zonas débiles", `${c.cuenta[3]} celdas · ${ha(c.ha[3])}`],
+      ["Se recuperaron", `${c.cuenta[4]} celdas · ${ha(c.ha[4])}`], ["Normales", `${c.cuenta[1]} celdas`]];
+    const prob = c.cuenta[2] + c.cuenta[3];
+    res.replaceChildren(...[
+      c.viejoSinCultivo ? el("div", { class: "calc warn" }, el("b", {}, "El vuelo anterior no tenía cultivo visible"), el("span", {}, "Solo se marcan las zonas débiles del vuelo nuevo. Desde el próximo vuelo ya se ve qué empeora o se recupera.")) : null,
+      el("dl", { class: "kv" }, kv.flatMap(([a, b]) => [el("dt", {}, a), el("dd", {}, b)])),
+      el("div", { class: "leyenda" }, el("span", { class: "sw", style: "background:#D63027" }), "Sigue débil", el("span", { class: "sw", style: "background:#F58220" }), "Nueva débil", el("span", { class: "sw", style: "background:#2F9828" }), "Se recuperó"),
+      el("div", { class: "row-btns" },
+        el("button", { class: "btn primary", onclick: () => verComp(c) }, "Ver cambios en el mapa"),
+        prob ? el("button", { class: "btn", onclick: () => descargar(`zonas_a_revisar_${l.nombre.replace(/[^\w-]+/g, "_")}_${o.fecha}.kml`, kmlCeldas(c, [2, 3], `${l.nombre} · zonas a revisar ${o.fecha}`), "application/vnd.google-earth.kml+xml") }, "KML de zonas a revisar") : null),
+      el("p", { class: "hint" }, prob ? "Empieza por las que siguen débiles: llevan dos vuelos así. Abre el KML en Google Earth o en el celular, camina hasta cada zona y anota la causa en una inspección." : "No hay zonas débiles que revisar entre estos dos vuelos.")].filter(Boolean));
+  };
+  sel.addEventListener("change", correr);
+  caja.append(el("label", { for: "cmpCon" }, "Vuelo anterior", sel), res);
+  correr();
+  return caja;
+}
+function verComp(c) {
+  if (!mapa) return; quitarComp();
+  S.verVigor = false; mostrarCapasLote(S.loteSel);
+  capaComp = L.imageOverlay(c.png, [[c.lim.s, c.lim.w], [c.lim.n, c.lim.e]], { pane: "vigor", opacity: .85, className: "pixelado", interactive: false }).addTo(mapa);
+  toast("Cambios en el mapa: rojo sigue débil, naranja nueva débil, verde se recuperó");
 }
 function formOrto(l) {
   const f = el("input", { type: "file", id: "oArchivo", accept: ".tif,.tiff,image/tiff" });
@@ -372,10 +415,11 @@ function seleccionarLote(id) {
   const prev = S.loteSel; S.loteSel = id;
   if (prev && polis.get(prev)) polis.get(prev).setStyle(estiloLote(false));
   const pol = polis.get(id); if (pol) { pol.setStyle(estiloLote(true)); mapa.flyToBounds(pol.getBounds(), { paddingBottomRight: [0, 280], paddingTopLeft: [20, 80], maxZoom: 18 }); }
-  S.seg = "reg"; $("fMas").hidden = true;
+  S.seg = "reg"; $("fMas").hidden = true; quitarComp();
   pintarFicha(lotePorId(id)); mostrarCapasLote(id);
 }
 function cerrarFicha() {
+  quitarComp();
   if (S.loteSel && polis.get(S.loteSel)) polis.get(S.loteSel).setStyle(estiloLote(false));
   S.loteSel = null; $("ficha").hidden = true; $("mapBottom").hidden = false;
 }
@@ -434,7 +478,8 @@ function confirmar(msg) { return window.confirm(msg); }
 function descargarKml(l) {
   if (!l.borde?.length) { toast("Sin borde", true); return; }
   const coords = [...l.borde, l.borde[0]].map(p => `${p.lng},${p.lat},0`).join(" ");
-  const kml = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${l.nombre}</name><Placemark><name>${l.nombre}</name><Polygon><outerBoundaryIs><LinearRing><coordinates>${coords}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark></Document></kml>`;
+  const nom = String(l.nombre).replace(/[<&>]/g, c => ({ "<": "&lt;", "&": "&amp;", ">": "&gt;" }[c]));
+  const kml = `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${nom}</name><Placemark><name>${nom}</name><Polygon><outerBoundaryIs><LinearRing><coordinates>${coords}</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark></Document></kml>`;
   descargar(`${l.nombre.replace(/[^\w-]+/g, "_")}.kml`, kml, "application/vnd.google-earth.kml+xml");
 }
 function descargar(nombre, contenido, tipo) {

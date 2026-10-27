@@ -127,9 +127,84 @@ export async function procesarGeoTiff(file, { maxLado = 4096, celdaM = 5, umbral
   });
   vx.putImageData(vd, 0, 0);
   const total = cobs.length;
-  const vigor = { celdaM, umbralRel, umbralExg: Math.round(uExg * 1000) / 1000, mediana: Math.round(mediana * 10) / 10, corte: Math.round(corte * 10) / 10,
+  const grid = borde && borde.length >= 3 ? gridLote({ borde, bounds, tw, th, valido, exg, uExg, celdaM, gsd, mediana }) : null;
+  const vigor = { grid, celdaM, umbralRel, umbralExg: Math.round(uExg * 1000) / 1000, mediana: Math.round(mediana * 10) / 10, corte: Math.round(corte * 10) / 10,
     debiles, total, areaDebilHa: Math.round(debiles * (cp * gsd) ** 2 / 100) / 100, sinCultivo: mediana < 1, png: vc.toDataURL("image/png") };
   return { data, bounds, ancho: tw, alto: th, gsdCm: Math.round(gsd * 1000) / 10, origen: { ancho: W, alto: H, crs: conv.nombre }, vigor };
+}
+
+// ---- Cuadrícula fija del lote (para comparar vuelos celda por celda) ----
+const b64 = u8 => { let s = ""; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode(...u8.subarray(i, i + 8192)); return btoa(s); };
+const deB64 = t => Uint8Array.from(atob(t), c => c.charCodeAt(0));
+// La cuadrícula sale del rectángulo que encierra el borde del lote, con celdas de celdaM metros; 255 = sin dato.
+export function marcoLote(borde, celdaM) {
+  const lats = borde.map(p => p.lat), lngs = borde.map(p => p.lng);
+  const s = Math.min(...lats), n = Math.max(...lats), w = Math.min(...lngs), e = Math.max(...lngs);
+  const dLat = celdaM / 111320, dLng = celdaM / (111320 * Math.cos((s + n) / 2 * Math.PI / 180));
+  return { s, w, dLat, dLng, nx: Math.max(1, Math.ceil((e - w) / dLng)), ny: Math.max(1, Math.ceil((n - s) / dLat)) };
+}
+function gridLote({ borde, bounds, tw, th, valido, exg, uExg, celdaM, gsd, mediana }) {
+  let m = marcoLote(borde, celdaM);
+  if (m.nx * m.ny > 40000) m = marcoLote(borde, celdaM * Math.ceil(Math.sqrt(m.nx * m.ny / 40000)));
+  const N = m.nx * m.ny, val = new Uint32Array(N), veg = new Uint32Array(N);
+  for (let y = 0; y < th; y++) {
+    const lat = bounds.n - (y + 0.5) / th * (bounds.n - bounds.s), cy = Math.floor((lat - m.s) / m.dLat);
+    if (cy < 0 || cy >= m.ny) continue;
+    for (let x = 0; x < tw; x++) {
+      const i = y * tw + x; if (!valido[i]) continue;
+      const lng = bounds.w + (x + 0.5) / tw * (bounds.e - bounds.w), cx = Math.floor((lng - m.w) / m.dLng);
+      if (cx < 0 || cx >= m.nx) continue;
+      const c = cy * m.nx + cx; val[c]++; if (exg[i] > uExg) veg[c]++;
+    }
+  }
+  const minPx = 0.5 * (m.dLat * 111320 / gsd) ** 2, cob = new Uint8Array(N).fill(255);
+  for (let cy = 0; cy < m.ny; cy++) for (let cx = 0; cx < m.nx; cx++) {
+    const c = cy * m.nx + cx;
+    if (val[c] < minPx || !dentro({ lat: m.s + (cy + 0.5) * m.dLat, lng: m.w + (cx + 0.5) * m.dLng }, borde)) continue;
+    cob[c] = Math.round(100 * veg[c] / val[c]);
+  }
+  return { ...m, celdaM: Math.round(m.dLat * 111320 * 10) / 10, mediana: Math.round(mediana * 10) / 10, cob: b64(cob) };
+}
+// Compara dos vuelos del mismo lote. Clases: 0 sin dato, 1 normal, 2 sigue débil, 3 nueva zona débil, 4 se recuperó.
+export function compararVigor(nuevo, viejo, umbralRel = 0.7) {
+  const gN = nuevo.vigor?.grid, gV = viejo.vigor?.grid;
+  if (!gN || !gV) return null;
+  const cN = deB64(gN.cob), cV = deB64(gV.cob);
+  const med = (u8) => { const v = [...u8].filter(x => x !== 255).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : 0; };
+  const mN = Math.max(med(cN), 1), mV = med(cV), viejoSinCultivo = mV < 1;
+  const clases = new Uint8Array(gN.nx * gN.ny), cuenta = [0, 0, 0, 0, 0];
+  for (let cy = 0; cy < gN.ny; cy++) for (let cx = 0; cx < gN.nx; cx++) {
+    const i = cy * gN.nx + cx, a = cN[i]; if (a === 255) continue;
+    const lat = gN.s + (cy + 0.5) * gN.dLat, lng = gN.w + (cx + 0.5) * gN.dLng;
+    const vx = Math.floor((lng - gV.w) / gV.dLng), vy = Math.floor((lat - gV.s) / gV.dLat);
+    const b = vx >= 0 && vy >= 0 && vx < gV.nx && vy < gV.ny ? cV[vy * gV.nx + vx] : 255;
+    const debN = a / mN < umbralRel, debV = b !== 255 && !viejoSinCultivo && b / mV < umbralRel;
+    const k = b === 255 || viejoSinCultivo ? (debN ? 3 : 1) : debN && debV ? 2 : debN ? 3 : debV ? 4 : 1;
+    clases[i] = k; cuenta[k]++;
+  }
+  const haCelda = (gN.dLat * 111320) * (gN.dLng * 111320 * Math.cos((gN.s + gN.dLat * gN.ny / 2) * Math.PI / 180)) / 10000;
+  const cv = document.createElement("canvas"); cv.width = gN.nx; cv.height = gN.ny;
+  const cx2 = cv.getContext("2d"), im = cx2.createImageData(gN.nx, gN.ny);
+  const COL = [null, [150, 150, 150, 70], [214, 48, 39, 210], [245, 130, 32, 220], [47, 152, 40, 200]];
+  for (let cy = 0; cy < gN.ny; cy++) for (let x = 0; x < gN.nx; x++) {
+    const k = clases[cy * gN.nx + x]; if (!k) continue;
+    im.data.set(COL[k], ((gN.ny - 1 - cy) * gN.nx + x) * 4); // la fila 0 de la imagen es el norte
+  }
+  cx2.putImageData(im, 0, 0);
+  const lim = { s: gN.s, w: gN.w, n: gN.s + gN.ny * gN.dLat, e: gN.w + gN.nx * gN.dLng };
+  return { clases, cuenta, ha: cuenta.map(n => n * haCelda), medianaNueva: mN, medianaVieja: mV, viejoSinCultivo, png: cv.toDataURL("image/png"), lim, grid: gN };
+}
+// Celdas de una clase como polígonos KML.
+export function kmlCeldas(cmp, clasesIncl, nombre) {
+  const g = cmp.grid, pl = [];
+  for (let cy = 0; cy < g.ny; cy++) for (let cx = 0; cx < g.nx; cx++) {
+    const k = cmp.clases[cy * g.nx + cx]; if (!clasesIncl.includes(k) || pl.length >= 800) continue;
+    const s = g.s + cy * g.dLat, w = g.w + cx * g.dLng, n = s + g.dLat, e = w + g.dLng;
+    pl.push(`<Placemark><name>${k === 2 ? "Sigue débil" : "Nueva zona débil"}</name><styleUrl>#c${k}</styleUrl><Polygon><outerBoundaryIs><LinearRing><coordinates>${w},${s},0 ${e},${s},0 ${e},${n},0 ${w},${n},0 ${w},${s},0</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>`);
+  }
+  const esc = t => String(t).replace(/[<&>]/g, c => ({ "<": "&lt;", "&": "&amp;", ">": "&gt;" }[c]));
+  return `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${esc(nombre)}</name>`
+    + `<Style id="c2"><PolyStyle><color>c02730d6</color></PolyStyle></Style><Style id="c3"><PolyStyle><color>c02082f5</color></PolyStyle></Style>${pl.join("")}</Document></kml>`;
 }
 
 // Parte una cadena larga en trozos que caben en un documento de Firestore.
