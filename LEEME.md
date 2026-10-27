@@ -1,5 +1,7 @@
 # Control Agrícola · AeroCAS — cómo ponerla a funcionar
 
+Versión 0.10 (27-oct-2026): rendimiento estimado del ciclo en el Panel (escenarios conservador, medio y optimista de la plantilla; columna de aforo de campo y de corte real cuando existen; población contra el objetivo de plantas por metro; costo por tonelada). Aforo opcional en la inspección (kg cortados en N metros de surco). Distancia entre surcos por lote. Supuestos editables. No necesita reglas nuevas.
+
 Versión 0.9 (27-oct-2026): pestaña Agenda en la ficha del lote con las 65 labores del cronograma por días desde la siembra (las del rebrote, desde el corte 1); avisos de lo que toca hoy y lo atrasado en la campana; marcar hecha, no aplica o «no fue necesaria», y registrar la labor desde la agenda. No necesita reglas nuevas.
 
 Versión 0.8 (27-oct-2026): lista de compras del proyecto dentro de la pestaña Gastos, guardada en la nube y vinculada a los registros (al registrar la compra desde la lista, el valor pasa a Gastos o a la bodega y el ítem queda marcado). Requiere publicar el `firestore.rules` nuevo (agrega la colección `lista`).

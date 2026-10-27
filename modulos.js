@@ -33,6 +33,17 @@ export const CAT_DEFECTO = {
   precioGalon: null
 };
 // Acepta el catálogo viejo (productos como texto, «motobombas») y lo deja en el formato nuevo.
+// Supuestos de producción (hoja Produccion de la plantilla). Escenarios: conservador, medio, optimista.
+export const PROD_DEFECTO = { rend: [27, 30, 45], rebrote: [0.5, 0.6, 0.7], perdidas: [0.12, 0.08, 0.05], ms: 0.25, precio: 550000, compensacion: 2, distSurcos: 0.8, plantasObj: [10, 12] };
+export const ESCENARIOS = ["Conservador", "Medio", "Optimista"];
+// t/ha de forraje verde a partir de un aforo: kg cortados en N metros de surco.
+export const aforoTHa = (kgM, dist) => kgM > 0 && dist > 0 ? kgM / dist * 10 : null;
+// Rendimiento del ciclo (corte 1 + rebrote 1) para un área. fv1 = t FV/ha del corte 1; reb = fracción del rebrote; perd = pérdidas.
+export function estimar({ area, fv1, reb, perd, prod }) {
+  const fvR = fv1 * reb, silo1 = fv1 * (1 - perd) * area, siloR = fvR * (1 - perd) * area, silo = silo1 + siloR;
+  const venta = Math.max(0, silo - (prod.compensacion || 0));
+  return { fv1, fvR, silo1, siloR, silo, siloHa: area ? silo / area : null, venta, ingreso: venta * (prod.precio || 0), ms: (fv1 + fvR) * area * (prod.ms || 0) };
+}
 export function normCat(c) {
   c = c || CAT_DEFECTO;
   const productos = (c.productos || []).map(p => typeof p === "string"
@@ -40,7 +51,7 @@ export function normCat(c) {
     : { tipo: "Otro", unidad: "kg", ...p });
   if (!productos.some(p => p.tipo === "Semilla")) productos.push(CAT_DEFECTO.productos.find(p => p.tipo === "Semilla"));
   const equipos = (c.equipos || c.motobombas || CAT_DEFECTO.equipos).map(e => e === 'Motobomba 2" gasolina' ? BOMBA : e);
-  return { productos, equipos, plagas: c.plagas || CAT_DEFECTO.plagas, precioGalon: c.precioGalon ?? null };
+  return { productos, equipos, plagas: c.plagas || CAT_DEFECTO.plagas, precioGalon: c.precioGalon ?? null, produccion: { ...PROD_DEFECTO, ...(c.produccion || {}) } };
 }
 export const prodDe = (cat, nombre) => cat.productos.find(p => p.nombre === nombre) || null;
 export function prodsTipo(cat, tipos) { const ps = tipos ? cat.productos.filter(p => tipos.includes(p.tipo)) : cat.productos; return (ps.length ? ps : cat.productos).map(p => p.nombre); }
@@ -87,6 +98,9 @@ export const TIPOS = {
       { k: "fenologia", l: "Etapa del cultivo", t: "sel", ops: ["Emergencia", "3 a 5 hojas", "Crecimiento (6 hojas o más)", "Embuchamiento", "Floración", "Grano lechoso", "Grano pastoso", "Madurez", "Rebrote"] },
       { k: "alturas", l: "Altura de 10 plantas en cm (separadas por espacio)", t: "alturas" },
       { k: "plantasM", l: "Plantas por metro de surco", t: "num", step: "0.1" },
+      { k: "pesoMuestra", l: "Aforo: peso de las plantas cortadas (kg)", t: "num", step: "0.1",
+        ayuda: "Opcional, cerca del corte: corta todas las plantas de un tramo de surco y pésalas en verde. Con esto la app estima las toneladas por hectárea." },
+      { k: "metrosMuestra", l: "Aforo: largo del tramo cortado (m)", t: "num", step: "0.5", def: 5 },
       { k: "sanitario", l: "Estado sanitario", t: "sel", ops: ["Bueno", "Regular", "Malo"] }, fotos, obs] },
   siembra: { nombre: "Siembra", desc: "Área, semilla, kg/ha, método", ico: "🌾",
     campos: [{ k: "area", l: "Área sembrada (ha)", t: "num", step: "0.01", req: true },
@@ -148,7 +162,8 @@ export function derivar(tipo, d, cat, fechaHecho) {
     for (const p of d.productos || []) { const c = prodDe(cat, p.producto); if (c?.carencia != null && c.carencia !== "") car = Math.max(car, Number(c.carencia)); else sinCar.push(p.producto); }
     d.carencia = car; d.sinCarencia = sinCar; d.fechaLibre = fechaHecho ? sumarDias(fechaHecho, car) : null;
   }
-  if (tipo === "inspeccion") { const a = parseAlturas(d.alturas); d.nAlturas = a.length; d.alturaProm = a.length ? r1(a.reduce((s, x) => s + x, 0) / a.length, 1) : null; }
+  if (tipo === "inspeccion") { const a = parseAlturas(d.alturas); d.nAlturas = a.length; d.alturaProm = a.length ? r1(a.reduce((s, x) => s + x, 0) / a.length, 1) : null;
+    d.kgM = d.pesoMuestra > 0 && d.metrosMuestra > 0 ? r1(d.pesoMuestra / d.metrosMuestra, 2) : null; }
   if (tipo === "siembra") d.kgHa = d.area > 0 ? r1(d.kgSemilla / d.area, 1) : null;
   if (tipo === "labor") d.total = Math.round((d.jornales || 0) * (d.valorJornal || 0) + (d.horasTractor || 0) * (d.valorHoraTractor || 0) + (d.otros || 0));
   if (tipo === "combustible") d.precioGal = d.galones > 0 ? Math.round(d.valor / d.galones) : null;
@@ -167,6 +182,7 @@ export function vistaCalculo(tipo, d) {
   if (tipo === "fumigacion") return { cls: d.horas == null ? "" : "ok", titulo: "Carencia", valor: d.carencia ? `${d.carencia} días` : "Sin carencia",
     texto: [d.fechaLibre && d.carencia ? `No cortar antes del ${fmtF(d.fechaLibre)}` : "", d.horas != null ? `Duración: ${num(d.horas, 2)} h` : "",
       d.costoAplicacion ? `Aplicación: ${pesos(d.costoAplicacion)}${d.area > 0 ? ` (${pesos(d.costoAplicacion / d.area)}/ha)` : ""}` : ""].filter(Boolean).join(" · ") };
+  if (tipo === "inspeccion" && d.kgM) return { cls: "ok", titulo: "Aforo", valor: `${num(d.kgM, 2)} kg por metro`, texto: `≈ ${num(aforoTHa(d.kgM, PROD_DEFECTO.distSurcos), 1)} t de forraje verde por ha con surcos a ${PROD_DEFECTO.distSurcos} m` };
   if (tipo === "inspeccion") return { cls: d.alturaProm ? "ok" : "", titulo: "Altura promedio", valor: d.alturaProm ? num(d.alturaProm, 1) + " cm" : "—", texto: d.nAlturas ? `${d.nAlturas} plantas medidas${d.nAlturas < 10 ? " (lo ideal son 10)" : ""}` : "" };
   if (tipo === "siembra") return { cls: d.kgHa ? "ok" : "", titulo: "Semilla por hectárea", valor: d.kgHa ? num(d.kgHa, 1) + " kg/ha" : "—" };
   if (tipo === "labor") return { cls: d.total ? "ok" : "", titulo: "Costo de la labor", valor: pesos(d.total) };
@@ -210,7 +226,7 @@ export function resumen(r) {
     case "fertilizacion": return `${d.producto} · ${num(d.cantidad, 1)} ${d.unidad || ""}${d.area ? ` en ${num(d.area, 2)} ha` : ""}${d.dosisHa ? ` (${num(d.dosisHa, 0)} ${d.base}/ha)` : ""}`;
     case "plaga": return `${d.plaga} · ${num(d.pct, 1)} %${d.sobreUmbral ? " · sobre el umbral" : ""}`;
     case "fumigacion": return `${fmtDosis(d.productos)} · ${num(d.area, 2)} ha · ${d.metodo || ""}${d.carencia ? ` · carencia hasta ${fmtF(d.fechaLibre)}` : ""}${d.costoAplicacion ? ` · ${pesos(d.costoAplicacion)}` : ""}`;
-    case "inspeccion": return [d.fenologia, d.alturaProm ? num(d.alturaProm, 0) + " cm" : null, d.plantasM ? num(d.plantasM, 1) + " pl/m" : null, d.sanitario].filter(Boolean).join(" · ");
+    case "inspeccion": return [d.fenologia, d.alturaProm ? num(d.alturaProm, 0) + " cm" : null, d.plantasM ? num(d.plantasM, 1) + " pl/m" : null, d.kgM ? `aforo ${num(d.kgM, 1)} kg/m` : null, d.sanitario].filter(Boolean).join(" · ");
     case "siembra": return `${num(d.area, 2)} ha · ${num(d.kgSemilla, 1)} kg de ${d.semilla}${d.kgHa ? ` (${num(d.kgHa, 1)} kg/ha)` : ""}`;
     case "labor": return `${d.labor || "Labor"} · ${pesos(d.total)}${d.jornales ? ` · ${num(d.jornales, 1)} jornales` : ""}${d.horasTractor ? ` · ${num(d.horasTractor, 1)} h tractor` : ""}`;
     case "combustible": return `${d.equipo || "Equipo"} · ${num(d.galones, 1)} gal ${d.combustible || ""} · ${pesos(d.valor)}`;

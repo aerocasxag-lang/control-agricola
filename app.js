@@ -8,13 +8,13 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { areaHa, parseKml, centroide, fechaLocal, diasEntre, comprimirFoto, csvEscape } from "./util.js";
 import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, vistaCalculo, revisar, resumen, filasCalculadas, fmtDosis,
-  inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO } from "./modulos.js";
+  inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO, PROD_DEFECTO, ESCENARIOS, aforoTHa, estimar } from "./modulos.js";
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir } from "./orto.js";
 import { CRONO } from "./cronograma.js";
 import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.9 · 27-oct-2026";
+const VERSION = "0.10 · 27-oct-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -475,12 +475,12 @@ function formLote(l) {
     el("div", { class: "grid2" }, inp("loFinca", "Finca", v.finca), inp("loMun", "Municipio", v.municipio)),
     el("div", { class: "grid2" }, inp("loArea", "Área sembrada (ha)", v.area_ha, "number", { step: "0.01", inputmode: "decimal" }), inp("loSecc", "Secciones de riego", v.secciones, "number", { inputmode: "numeric" })),
     el("div", { class: "grid2" }, el("label", { for: "loCiclo" }, "Ciclo actual", sel), inp("loSiembra", "Fecha de siembra", v.fechaSiembra, "date")),
-    el("div", { class: "grid2" }, inp("loCorte", "Corte previsto", v.fechaCorte, "date"), el("span")),
+    el("div", { class: "grid2" }, inp("loCorte", "Corte previsto", v.fechaCorte, "date"), inp("loDist", "Distancia entre surcos (m)", v.distSurcos, "number", { step: "0.05", inputmode: "decimal", placeholder: "0,8" })),
     el("label", { for: "loBorde" }, "Borde del lote (KML o KMZ)", archivo), info,
     el("button", { class: "btn primary", onclick: () => {
       const nombre = $("loNombre").value.trim(); if (!nombre) { toast("Falta el nombre", true); return; }
       const datos = { nombre, finca: $("loFinca").value.trim(), municipio: $("loMun").value.trim(), area_ha: parseFloat($("loArea").value) || null,
-        secciones: parseInt($("loSecc").value) || null, ciclo: sel.value, fechaSiembra: $("loSiembra").value || null, fechaCorte: $("loCorte").value || null, borde, actualizado: serverTimestamp() };
+        secciones: parseInt($("loSecc").value) || null, ciclo: sel.value, fechaSiembra: $("loSiembra").value || null, fechaCorte: $("loCorte").value || null, distSurcos: parseFloat($("loDist").value) || null, borde, actualizado: serverTimestamp() };
       const ref = l ? doc(db, "lotes", l.id) : doc(collection(db, "lotes"));
       setDoc(ref, l ? datos : { ...datos, creado: serverTimestamp(), archivado: false }, { merge: true }).catch(e => toast("No se guardó: " + e.code, true));
       cerrarModal(); toast(l ? "Lote actualizado" : "Lote creado"); pintarLotes.ajustado = false;
@@ -942,10 +942,82 @@ function pintarPanel() {
   const cardPlagas = el("div", { class: "card" }, el("h3", {}, "Incidencia de plagas"),
     Object.keys(porPlaga).length ? tabla(["Plaga", "Último", "Máximo", "Umbral"], Object.entries(porPlaga).map(([k, p]) => ({ cls: p.ult.datos.sobreUmbral ? "fila-alerta" : "",
       c: [`${k} (${p.n})`, `${num(p.ult.datos.pct, 1)} % · ${fmtFecha(p.ult.fechaHecho)}`, num(p.max, 1) + " %", p.ult.datos.umbral + " %"] }))) : el("p", { class: "hint" }, "Sin monitoreos aprobados."));
-  $("panelExtra").replaceChildren(cardCostos, cardInv, cardFert, cardFum, cardPlagas,
+  $("panelExtra").replaceChildren(cardRendimiento(sel.value, areaSemb, cs.total), cardCostos, cardInv, cardFert, cardFum, cardPlagas,
     el("div", { class: "card" }, el("h3", {}, "Exportar"), el("p", { class: "hint" }, "Todos los registros aprobados en CSV (se abre en Excel), con el costo de cada uno."), el("button", { class: "btn", onclick: exportarCsv }, "Descargar CSV")),
     el("p", { class: "hint" }, "Solo cuentan los registros aprobados."));
 }
+// ---------- Rendimiento estimado (hoja Produccion de la plantilla + aforo + cosecha real) ----------
+function cardRendimiento(loteSel, areaSemb, costoTotal) {
+  const prod = catActual().produccion || PROD_DEFECTO;
+  const lotes = S.lotes.filter(l => !l.archivado && (!loteSel || l.id === loteSel));
+  const area = areaSemb || 0;
+  if (!area) return el("div", { class: "card" }, el("h3", {}, "Rendimiento estimado"), el("p", { class: "hint" }, "Falta el área sembrada: ponla en el lote o registra la siembra."));
+  const dist = (lotes.length === 1 && lotes[0].distSurcos) || prod.distSurcos;
+  const ids = new Set(lotes.map(l => l.id)), ap = S.registros.filter(r => r.estado === "aprobado" && ids.has(r.loteId));
+  const esReb = r => /rebrote/i.test(r.ciclo || "");
+  const ult = f => ap.filter(f).sort((a, b) => b.fechaHecho.localeCompare(a.fechaHecho))[0];
+  const afo1 = ult(r => r.tipo === "inspeccion" && r.datos?.kgM && !esReb(r)), afoR = ult(r => r.tipo === "inspeccion" && r.datos?.kgM && esReb(r));
+  const pob = ult(r => r.tipo === "inspeccion" && r.datos?.plantasM > 0 && !esReb(r));
+  const cos1 = ap.filter(r => r.tipo === "cosecha" && !esReb(r)), cosR = ap.filter(r => r.tipo === "cosecha" && esReb(r));
+  const suma = (rs, k) => rs.reduce((s, r) => s + (Number(r.datos?.[k]) || 0), 0);
+  // Columnas: los tres escenarios, el aforo (si hay) y el corte real (si hay).
+  const cols = ESCENARIOS.map((n, i) => ({ n, e: estimar({ area, fv1: prod.rend[i], reb: prod.rebrote[i], perd: prod.perdidas[i], prod }) }));
+  if (afo1 && !cos1.length) cols.push({ n: "Aforo", e: estimar({ area, fv1: aforoTHa(afo1.datos.kgM, dist), reb: prod.rebrote[1], perd: prod.perdidas[1], prod }), nota: `Aforo del ${fmtFecha(afo1.fechaHecho)}: ${num(afo1.datos.kgM, 2)} kg/m con surcos a ${dist} m. Rebrote y pérdidas del escenario medio.` });
+  if (cos1.length) {
+    const tS = suma(cos1, "tSilo"), tV = suma(cos1, "tVerde"), aC = suma(cos1, "area") || area;
+    const fv1 = tV ? tV / aC : tS / (1 - prod.perdidas[1]) / aC;
+    const fvR = afoR ? aforoTHa(afoR.datos.kgM, dist) : fv1 * prod.rebrote[1];
+    const siloR = cosR.length ? suma(cosR, "tSilo") : fvR * (1 - prod.perdidas[1]) * area, silo = tS + siloR, venta = Math.max(0, silo - (prod.compensacion || 0));
+    cols.push({ n: cosR.length ? "Real" : "Corte 1 real", e: { fv1, fvR, silo, siloHa: silo / area, venta, ingreso: venta * prod.precio },
+      nota: `Corte 1 real: ${num(tS, 1)} t de silo${tV ? ` (${num(tV, 1)} t verde)` : ""}. ${cosR.length ? "Rebrote real." : afoR ? "Rebrote según el aforo del " + fmtFecha(afoR.fechaHecho) + "." : "Rebrote al " + Math.round(prod.rebrote[1] * 100) + " % del corte 1."}` });
+  }
+  const fila = (t, f, fmt = v => num(v, 1)) => ({ c: [t, ...cols.map(c => fmt(f(c.e)))] });
+  const filas = [fila("Verde corte 1 t/ha", e => e.fv1), fila("Verde rebrote t/ha", e => e.fvR),
+    fila("Silo del ciclo (t)", e => e.silo, v => num(v, 0)), fila("Silo t/ha", e => e.siloHa),
+    fila("Para vender (t)", e => e.venta, v => num(v, 0)), fila("Ingreso", e => e.ingreso, millones)];
+  if (costoTotal > 0) filas.push(fila("Costo hoy por t", e => e.venta ? costoTotal / e.venta : null, v => v ? millones(v) : "—"));
+  const notas = cols.filter(c => c.nota).map(c => el("p", { class: "hint" }, c.nota));
+  let pobTxt = null;
+  if (pob) {
+    const pm = pob.datos.plantasM, [a, b] = prod.plantasObj || [10, 12], pha = pm / dist * 10000;
+    const cls = pm < a * 0.8 ? "warn" : "ok";
+    pobTxt = el("div", { class: "calc " + cls }, el("b", {}, `${num(pm, 1)} plantas por metro · ≈ ${num(pha / 1000, 0)} mil plantas/ha`),
+      el("span", {}, `Conteo del ${fmtFecha(pob.fechaHecho)}. Objetivo: ${a}–${b} plantas por metro. ${pm < a * 0.8 ? "Población baja: el rendimiento puede quedar cerca del escenario conservador; revisa resiembra." : pm > b * 1.2 ? "Población alta: tallos más delgados; ralear si aún se puede." : "Población dentro de lo esperado."}`));
+  }
+  return el("div", { class: "card" }, el("h3", {}, "Rendimiento estimado del ciclo"),
+    el("p", { class: "hint" }, "Corte 1 + rebrote 1 con los supuestos de la plantilla. El aforo de campo y la cosecha real reemplazan la estimación cuando existen."),
+    pobTxt,
+    el("div", { class: "scroll-x" }, el("table", { class: "t rend" }, el("thead", {}, el("tr", {}, el("th", {}, ""), cols.map(c => el("th", { class: "n" }, c.n.replace("Conservador", "Cons.").replace("Optimista", "Opt."))))),
+      el("tbody", {}, filas.map(f => el("tr", {}, f.c.map((x, i) => el("td", { class: i ? "n" : "" }, x))))))),
+    el("p", { class: "hint" }, `${num(area, 2)} ha · surcos a ${dist} m · se descuentan ${num(prod.compensacion, 1)} t al propietario · precio ${pesos(prod.precio)} por t.${costoTotal > 0 ? " «Costo hoy por t» = lo gastado hasta hoy dividido por las toneladas para vender." : ""}`),
+    ...notas,
+    !afo1 && !cos1.length ? el("p", { class: "hint" }, "Para afinar: cerca del corte registra una inspección con el aforo (peso de las plantas cortadas en 5 m de surco).") : null,
+    el("button", { class: "btn", onclick: formProduccion }, "Ajustar supuestos de producción"));
+}
+function formProduccion() {
+  const p = catActual().produccion || PROD_DEFECTO;
+  const n = (id, label, v, step = "0.01") => { const i = el("input", { id, type: "number", inputmode: "decimal", step }); i.value = v ?? ""; return el("label", { for: id }, label, i); };
+  const fila3 = (pre, label, arr, step, factor = 1) => el("div", { style: "display:grid;gap:4px" }, el("span", { class: "hint" }, label),
+    el("div", { class: "grid3" }, ESCENARIOS.map((e, i) => n(pre + i, e, arr[i] != null ? Math.round(arr[i] * factor * 100) / 100 : "", step))));
+  abrirModal("Supuestos de producción",
+    fila3("pR", "Forraje verde del corte 1 (t/ha)", p.rend, "0.5"),
+    fila3("pB", "Rebrote 1 como % del corte 1", p.rebrote, "1", 100),
+    fila3("pP", "Pérdidas de cosecha y ensilaje (%)", p.perdidas, "1", 100),
+    el("div", { class: "grid2" }, n("pPrecio", "Precio de venta ($/t)", p.precio, "1000"), n("pComp", "Silo al propietario (t)", p.compensacion, "0.5")),
+    el("div", { class: "grid2" }, n("pDist", "Distancia entre surcos (m)", p.distSurcos), n("pMs", "Materia seca (%)", Math.round((p.ms || 0) * 100), "1")),
+    el("div", { class: "grid2" }, n("pMin", "Plantas por metro: mínimo", p.plantasObj?.[0], "1"), n("pMax", "Plantas por metro: máximo", p.plantasObj?.[1], "1")),
+    el("p", { class: "hint" }, "Valores de la hoja Produccion de la plantilla. La distancia entre surcos de un lote se puede cambiar en Editar lote."),
+    el("button", { class: "btn primary", onclick: () => {
+      const v = id => { const x = parseFloat(String($(id).value).replace(",", ".")); return isFinite(x) ? x : null; };
+      const tres = (pre, f = 1) => [0, 1, 2].map(i => v(pre + i) == null ? null : v(pre + i) / f);
+      const produccion = { rend: tres("pR"), rebrote: tres("pB", 100), perdidas: tres("pP", 100), precio: v("pPrecio"), compensacion: v("pComp") ?? 0,
+        distSurcos: v("pDist") || 0.8, ms: (v("pMs") ?? 25) / 100, plantasObj: [v("pMin") ?? 10, v("pMax") ?? 12] };
+      if ([...produccion.rend, ...produccion.rebrote, ...produccion.perdidas].some(x => x == null || x < 0) || !(produccion.precio >= 0)) { toast("Completa todos los valores", true); return; }
+      setDoc(doc(db, "config", "catalogos"), { produccion }, { merge: true }).catch(e => toast("No se guardó (" + e.code + ")", true));
+      cerrarModal(); toast("Supuestos guardados");
+    } }, "Guardar"));
+}
+
 // ---------- Gastos (costo total del proyecto) ----------
 S.filtroGasto = "";
 function pintarGastos() {
@@ -1201,7 +1273,7 @@ function formCatalogos() {
         const tipo = TIPOS_PROD.find(x => x.toLowerCase() === t.toLowerCase()) || "Otro";
         return { nombre: n, tipo, unidad: /^l/i.test(u) ? "L" : "kg", carencia: nOrNull(c), min: nOrNull(m) }; });
       const plagas = lineas("cPlag").map(s => { const [nombre, u] = s.split(";"); return { nombre: nombre.trim(), umbral: parseFloat(u) || 20 }; });
-      setDoc(doc(db, "config", "catalogos"), { productos, equipos: lineas("cEq"), plagas, precioGalon: nOrNull(pg.value) }).catch(e => toast("No se guardó: " + e.code, true));
+      setDoc(doc(db, "config", "catalogos"), { productos, equipos: lineas("cEq"), plagas, precioGalon: nOrNull(pg.value), produccion: cat.produccion }).catch(e => toast("No se guardó: " + e.code, true));
       cerrarModal(); toast("Catálogos guardados");
     } }, "Guardar"));
 }

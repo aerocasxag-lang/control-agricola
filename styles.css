@@ -216,3 +216,5 @@ table.t tr.fila-alerta td{color:var(--crit)}
 .ag-grupo summary{cursor:pointer;font-family:var(--display);font-size:1.15rem;font-weight:600;padding:4px 0}
 .ag-grupo[open] summary{margin-bottom:6px}
 .item.ag .top span:first-child{font-weight:600;overflow-wrap:anywhere}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+table.t.rend{font-size:.86rem} table.t.rend td.n,table.t.rend th.n{white-space:nowrap;padding-left:8px} table.t.rend td:first-child{min-width:7.5em}
