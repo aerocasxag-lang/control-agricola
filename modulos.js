@@ -111,7 +111,7 @@ export const TIPOS = {
       { k: "tratada", l: "¿La semilla venía tratada?", t: "sino", def: true },
       { k: "germinacion", l: "Germinación en la prueba (%)", t: "num" }, fotos, obs] },
   labor: { nombre: "Labores", desc: "Jornales y horas de tractor", ico: "🧑‍🌾",
-    campos: [{ k: "labor", l: "Labor", t: "sel", ops: ["Desyerbe manual", "Arado", "Rastrillo", "Surcado", "Siembra", "Abonada", "Fumigación", "Riego", "Cerca", "Corte y ensilaje", "Otra"] },
+    campos: [{ k: "trabajador", l: "Quién la hizo", t: "txt", sug: ["Jonatan"], ayuda: "Con el nombre, la labor se descuenta de la cuenta de ese trabajador (pagos y anticipos)." }, { k: "labor", l: "Labor", t: "sel", ops: ["Desyerbe manual", "Arado", "Rastrillo", "Surcado", "Siembra", "Abonada", "Fumigación", "Riego", "Cerca", "Corte y ensilaje", "Otra"] },
       { k: "jornales", l: "Jornales", t: "num", step: "0.5" }, { k: "valorJornal", l: "Valor del jornal ($)", t: "num", step: "1000" },
       { k: "horasTractor", l: "Horas de tractor", t: "num", step: "0.1" }, { k: "valorHoraTractor", l: "Valor de la hora de tractor ($)", t: "num", step: "1000" },
       { k: "otros", l: "Otros costos de la labor ($)", t: "num", step: "1000" }, obs] },
@@ -140,7 +140,25 @@ export const TIPOS = {
       { k: "proveedor", l: "Proveedor o a quién se le pagó", t: "txt" }, { k: "factura", l: "N.º de factura", t: "txt" },
       { k: "fotos", l: "Foto de la factura o del recibo", t: "fotos" }, obs] }
 };
-export const ORDEN_TIPOS = ["riego", "fertilizacion", "plaga", "fumigacion", "inspeccion", "siembra", "labor", "combustible", "cosecha", "compra", "gasto"];
+TIPOS.pago = { nombre: "Pago a trabajador", desc: "Abonos y anticipos (Jonatan…)", ico: "🤝", sinLote: true,
+  nota: "Lo que se le paga a un trabajador. No suma al costo: el costo son las labores que hace. Si se le paga de más, queda como anticipo a favor del proyecto.",
+  campos: [{ k: "trabajador", l: "Trabajador", t: "txt", req: true, sug: ["Jonatan"] }, { k: "valor", l: "Valor pagado ($)", t: "num", step: "1000", req: true },
+    { k: "concepto", l: "Por qué se le pagó", t: "txt", ph: "Ej.: horas de arado y anticipo" }, { k: "medio", l: "Cómo se pagó", t: "sel", ops: ["Efectivo", "Nequi", "Transferencia", "Otro"] },
+    { k: "fotos", l: "Foto del recibo o comprobante", t: "fotos" }, { k: "obs", l: "Observaciones", t: "texto" }] };
+export const ORDEN_TIPOS = ["riego", "fertilizacion", "plaga", "fumigacion", "inspeccion", "siembra", "labor", "combustible", "cosecha", "compra", "gasto", "pago"];
+// Cuentas con trabajadores: labores hechas (lo que se le debe) contra pagos (lo que se le dio).
+const nomT = t => String(t || "").trim().replace(/\s+/g, " ");
+export function cuentasTrabajadores(regs) {
+  const c = {};
+  const f = n => c[n.toLowerCase()] ||= { nombre: n, labores: 0, pagado: 0, nLab: 0, nPag: 0 };
+  for (const r of regs) {
+    const n = nomT(r.datos?.trabajador); if (!n) continue;
+    if (r.tipo === "labor") { const x = f(n); x.labores += Number(r.datos?.total) || 0; x.nLab++; }
+    if (r.tipo === "pago") { const x = f(n); x.pagado += Number(r.datos?.valor) || 0; x.nPag++; }
+  }
+  for (const x of Object.values(c)) x.saldo = x.pagado - x.labores; // > 0 anticipo a favor; < 0 se le debe
+  return Object.values(c).sort((a, b) => a.nombre.localeCompare(b.nombre));
+}
 
 // ---------- Cálculos por registro ----------
 export function horasEntre(a, b) {
@@ -186,6 +204,7 @@ export function vistaCalculo(tipo, d) {
   if (tipo === "inspeccion") return { cls: d.alturaProm ? "ok" : "", titulo: "Altura promedio", valor: d.alturaProm ? num(d.alturaProm, 1) + " cm" : "—", texto: d.nAlturas ? `${d.nAlturas} plantas medidas${d.nAlturas < 10 ? " (lo ideal son 10)" : ""}` : "" };
   if (tipo === "siembra") return { cls: d.kgHa ? "ok" : "", titulo: "Semilla por hectárea", valor: d.kgHa ? num(d.kgHa, 1) + " kg/ha" : "—" };
   if (tipo === "labor") return { cls: d.total ? "ok" : "", titulo: "Costo de la labor", valor: pesos(d.total) };
+  if (tipo === "pago") return { cls: d.valor ? "ok" : "", titulo: "Pago", valor: pesos(d.valor), texto: "No suma al costo: se cruza con las labores del trabajador." };
   if (tipo === "combustible") return { cls: d.precioGal ? "ok" : "", titulo: "Precio del galón", valor: pesos(d.precioGal) };
   if (tipo === "cosecha") return { cls: d.tSiloHa ? "ok" : "", titulo: "Silo por hectárea", valor: d.tSiloHa ? num(d.tSiloHa, 1) + " t/ha" : "—", texto: d.ingreso ? "Ingreso: " + pesos(d.ingreso) : "" };
   if (tipo === "gasto") return { cls: d.valor ? "ok" : "", titulo: d.categoria || "Gasto", valor: pesos(d.valor), texto: d.valorUnit ? `${pesos(d.valorUnit)} por ${d.unidad || "unidad"}` : "" };
@@ -228,7 +247,8 @@ export function resumen(r) {
     case "fumigacion": return `${fmtDosis(d.productos)} · ${num(d.area, 2)} ha · ${d.metodo || ""}${d.carencia ? ` · carencia hasta ${fmtF(d.fechaLibre)}` : ""}${d.costoAplicacion ? ` · ${pesos(d.costoAplicacion)}` : ""}`;
     case "inspeccion": return [d.fenologia, d.alturaProm ? num(d.alturaProm, 0) + " cm" : null, d.plantasM ? num(d.plantasM, 1) + " pl/m" : null, d.kgM ? `aforo ${num(d.kgM, 1)} kg/m` : null, d.sanitario].filter(Boolean).join(" · ");
     case "siembra": return `${num(d.area, 2)} ha · ${num(d.kgSemilla, 1)} kg de ${d.semilla}${d.kgHa ? ` (${num(d.kgHa, 1)} kg/ha)` : ""}`;
-    case "labor": return `${d.labor || "Labor"} · ${pesos(d.total)}${d.jornales ? ` · ${num(d.jornales, 1)} jornales` : ""}${d.horasTractor ? ` · ${num(d.horasTractor, 1)} h tractor` : ""}`;
+    case "pago": return `${d.trabajador} · ${pesos(d.valor)}${d.concepto ? " · " + d.concepto : ""}`;
+    case "labor": return `${d.trabajador ? d.trabajador + " · " : ""}${d.labor || "Labor"} · ${pesos(d.total)}${d.jornales ? ` · ${num(d.jornales, 1)} jornales` : ""}${d.horasTractor ? ` · ${num(d.horasTractor, 1)} h tractor` : ""}`;
     case "combustible": return `${d.equipo || "Equipo"} · ${num(d.galones, 1)} gal ${d.combustible || ""} · ${pesos(d.valor)}`;
     case "cosecha": return `${num(d.area, 2)} ha · ${num(d.tSilo, 1)} t de silo${d.tSiloHa ? ` (${num(d.tSiloHa, 1)} t/ha)` : ""}${d.destino ? " · " + d.destino : ""}`;
     case "gasto": return `${d.descripcion || "Gasto"}${d.cantidad ? ` · ${num(d.cantidad, 1)} ${d.unidad || ""}` : ""} · ${pesos(d.valor)}${d.categoria ? " · " + d.categoria.replace(/ \(.*/, "") : ""}`;

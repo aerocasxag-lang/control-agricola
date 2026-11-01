@@ -8,14 +8,14 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { areaHa, parseKml, centroide, fechaLocal, diasEntre, comprimirFoto, csvEscape } from "./util.js";
 import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, vistaCalculo, revisar, resumen, filasCalculadas, fmtDosis,
-  inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO, PROD_DEFECTO, ESCENARIOS, aforoTHa, estimar } from "./modulos.js";
+  inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO, PROD_DEFECTO, ESCENARIOS, aforoTHa, estimar, cuentasTrabajadores } from "./modulos.js";
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir, compararVigor, kmlCeldas } from "./orto.js";
 import { CRONO } from "./cronograma.js";
 import { libroXlsx } from "./excel.js";
 import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.12 · 27-oct-2026";
+const VERSION = "0.13 · 31-oct-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -1072,6 +1072,80 @@ function formProduccion() {
     } }, "Guardar"));
 }
 
+// ---------- Pegar gastos desde el chat (sin duplicar) ----------
+// Formato: JSON con una lista de objetos { id, tipo, fecha, ...campos del registro, lote?, lista? }. Mismo id = se actualiza, no se duplica.
+const TIPOS_IMP = ["compra", "gasto", "labor", "combustible", "pago"];
+function leerBloque(texto) {
+  const t = String(texto).trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
+  if (t.length > 200000) throw new Error("el texto es muy largo");
+  let j = JSON.parse(t); if (!Array.isArray(j)) j = j.gastos || j.registros || [j];
+  if (!Array.isArray(j) || !j.length || j.length > 300) throw new Error("no encontré una lista de gastos");
+  const lotes = lotesVisibles();
+  return j.map((x, i) => {
+    const err = m => { throw new Error(`fila ${i + 1}${x?.id ? " (" + x.id + ")" : ""}: ${m}`); };
+    if (!x || typeof x !== "object") err("no es un gasto");
+    const id = String(x.id || ""); if (!/^[A-Za-z0-9_-]{1,40}$/.test(id)) err("falta el id (ej.: g015)");
+    if (!TIPOS_IMP.includes(x.tipo)) err(`tipo «${x.tipo}» no válido (${TIPOS_IMP.join(", ")})`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(x.fecha || "")) err("fecha en formato AAAA-MM-DD");
+    const T = TIPOS[x.tipo], d = {};
+    for (const c of T.campos) {
+      if (c.t === "fotos" || x[c.k] == null || x[c.k] === "") continue;
+      const v = x[c.k];
+      if (c.t === "num") { const n = Number(v); if (!isFinite(n) || n < 0) err(`${c.l}: número no válido`); d[c.k] = n; }
+      else d[c.k] = String(v).slice(0, 500);
+    }
+    if (x.tipo === "gasto" && d.categoria && !CATEGORIAS_GASTO.includes(d.categoria)) d.categoria = "Otros";
+    for (const c of T.campos) if (c.req && c.t !== "fotos" && d[c.k] == null) err(`falta ${c.l}`);
+    let l = null;
+    if (!T.sinLote) l = (x.lote && lotes.find(z => z.nombre.toLowerCase() === String(x.lote).toLowerCase())) || (lotes.length === 1 ? lotes[0] : null);
+    return { id, docId: "imp_" + id, tipo: x.tipo, fecha: x.fecha, l, lista: x.lista ? String(x.lista).slice(0, 120) : "", datos: derivar(x.tipo, d, catActual(), x.fecha) };
+  });
+}
+function formImportar() {
+  const ta = el("textarea", { id: "impTxt", rows: 8, spellcheck: "false", placeholder: '[{"id":"g015","tipo":"gasto","fecha":"2026-10-31","categoria":"Cerca","descripcion":"…","valor":50000}]' });
+  const prev = el("div", { style: "display:grid;gap:8px", "aria-live": "polite" });
+  const bImp = el("button", { class: "btn primary", disabled: true }, "Importar");
+  let filas = [];
+  const revisarTxt = () => {
+    bImp.disabled = true; filas = [];
+    if (!ta.value.trim()) { prev.replaceChildren(); return; }
+    try { filas = leerBloque(ta.value); } catch (e) { prev.replaceChildren(el("div", { class: "aviso crit" }, "No se puede importar: " + e.message)); return; }
+    let nuevos = 0, cambian = 0, iguales = 0;
+    for (const f of filas) { const r = S.registros.find(x => x.id === f.docId); f.estado = !r ? "nuevo" : (JSON.stringify(r.datos) === JSON.stringify(f.datos) && r.fechaHecho === f.fecha) ? "igual" : "cambia";
+      f.estado === "nuevo" ? nuevos++ : f.estado === "cambia" ? cambian++ : iguales++; }
+    const total = filas.reduce((s, f) => s + (f.tipo === "pago" ? 0 : f.tipo === "labor" ? f.datos.total || 0 : f.datos.valor || 0), 0), pagos = filas.reduce((s, f) => s + (f.tipo === "pago" ? f.datos.valor || 0 : 0), 0);
+    prev.replaceChildren(el("div", { class: "calc ok" }, el("b", {}, `${filas.length} filas · gastos ${pesos(total)}${pagos ? ` · pagos ${pesos(pagos)}` : ""}`), el("span", {}, `${nuevos} nuevas · ${cambian} se actualizan · ${iguales} ya estaban iguales`)),
+      el("div", { class: "list" }, filas.slice(0, 40).map(f => el("div", { class: "item " + (f.estado === "igual" ? "" : "aprobado") },
+        el("div", { class: "top" }, el("span", {}, `${f.id} · ${TIPOS[f.tipo].nombre}`), el("span", { class: "pill " + (f.estado === "nuevo" ? "aprobado" : f.estado === "cambia" ? "pendiente" : "cola") }, f.estado === "nuevo" ? "Nuevo" : f.estado === "cambia" ? "Cambia" : "Igual")),
+        el("div", { class: "res" }, resumen({ tipo: f.tipo, datos: f.datos })), el("div", { class: "meta" }, [fmtFecha(f.fecha), f.l?.nombre, f.lista ? "lista: " + f.lista : ""].filter(Boolean).join(" · "))))));
+    bImp.disabled = !(nuevos + cambian);
+  };
+  ta.addEventListener("input", revisarTxt);
+  bImp.addEventListener("click", async () => {
+    bImp.disabled = true;
+    try {
+      const b = writeBatch(db), nombre = S.perfil?.nombre || S.user.email; let n = 0;
+      for (const f of filas) {
+        if (f.estado === "igual") continue;
+        const ref = doc(db, "registros", f.docId), base = { tipo: f.tipo, loteId: f.l?.id || null, loteNombre: f.l?.nombre || "Bodega", finca: f.l?.finca || "", ciclo: f.l?.ciclo || "", fechaHecho: f.fecha, datos: f.datos };
+        if (f.estado === "nuevo") b.set(ref, { ...base, justificacion: "Importado del registro de compras (chat)", fotos: [], autorUid: S.user.uid, autorNombre: nombre, estado: "aprobado", autoaprobado: true, version: 1,
+          creadoLocal: new Date().toISOString(), creado: serverTimestamp(), gps: null, idExterno: f.id });
+        else b.update(ref, { ...base, version: increment(1), editadoEn: serverTimestamp(), editadoPor: S.user.uid, estado: "aprobado" });
+        b.set(doc(collection(db, "auditoria")), { registroId: f.docId, accion: f.estado === "nuevo" ? "importar" : "actualizar importado", motivo: "", uid: S.user.uid, nombre, fecha: serverTimestamp(), fechaLocal: new Date().toISOString(), antes: "", despues: JSON.stringify({ datos: f.datos }) });
+        n++;
+      }
+      await b.commit();
+      for (const f of filas) if (f.lista) { const it = S.lista.find(i => i.nombre.toLowerCase() === f.lista.toLowerCase()); if (it && it.registroId !== f.docId) guardarItem(it.id, { registroId: f.docId, comprado: true }); }
+      cerrarModal(); toast(`${n} gastos importados`);
+    } catch (e) { bImp.disabled = false; toast("No se pudo importar (" + (e.code || e.message) + ")", true); }
+  });
+  abrirModal("Pegar gastos del chat",
+    el("p", { class: "hint" }, "Pega aquí el bloque que te da Claude en el chat del registro de compras. Si un gasto ya está (mismo id), se actualiza; no se duplica."),
+    el("label", { for: "impTxt" }, "Bloque del chat", ta),
+    el("button", { class: "btn small", type: "button", onclick: async () => { try { ta.value = await navigator.clipboard.readText(); revisarTxt(); } catch (e) { toast("Pégalo con el teclado (mantener presionado → Pegar)", true); } } }, "Pegar del portapapeles"),
+    prev, bImp);
+}
+
 // ---------- Gastos (costo total del proyecto) ----------
 S.filtroGasto = "";
 function pintarGastos() {
@@ -1089,18 +1163,28 @@ function pintarGastos() {
     ["Combustible de equipos", cs.combustible], ["Gasolina de riego", cs.gasolinaRiego], ["Equipos y herramientas", cs.equipos],
     ...Object.entries(cs.porCategoria).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, v])].filter(([, v]) => v > 0);
   const bodega = Object.values(inv).reduce((s, f) => s + (f.costoProm != null ? Math.max(f.saldo, 0) * f.costoProm : 0), 0);
-  // Lista: gastos, equipos y compras de bodega
-  const movs = S.registros.filter(r => (r.tipo === "gasto" || r.tipo === "compra") && r.estado !== "anulado" && r.estado !== "rechazado")
-    .filter(r => !S.filtroGasto || (S.filtroGasto === "bodega" ? r.tipo === "compra" : r.datos?.categoria === S.filtroGasto));
+  const ctas = cuentasTrabajadores(todosAp), anticipos = ctas.reduce((s, c) => s + Math.max(0, c.saldo), 0), debe = ctas.reduce((s, c) => s + Math.max(0, -c.saldo), 0);
+  const gastado = cs.total + bodega + anticipos;
+  // Lista: gastos, equipos, compras de bodega y pagos
+  const movs = S.registros.filter(r => (r.tipo === "gasto" || r.tipo === "compra" || r.tipo === "pago") && r.estado !== "anulado" && r.estado !== "rechazado")
+    .filter(r => !S.filtroGasto || (S.filtroGasto === "bodega" ? r.tipo === "compra" : S.filtroGasto === "pagos" ? r.tipo === "pago" : r.datos?.categoria === S.filtroGasto));
   const cats = [...new Set(S.registros.filter(r => r.tipo === "gasto").map(r => r.datos?.categoria).filter(Boolean))];
   const chip = (k, t) => el("button", { "aria-pressed": S.filtroGasto === k ? "true" : "false", onclick: () => { S.filtroGasto = k; pintarGastos(); } }, t);
   $("gastosBody").replaceChildren(selector,
-    el("div", { class: "total-proyecto" }, el("span", {}, "Total gastado en el proyecto"), el("b", {}, pesos(cs.total + bodega)),
-      el("span", {}, bodega > 0 ? `Incluye ${pesos(bodega)} en insumos que siguen en bodega. Costo de lo ya usado: ${pesos(cs.total)}.` : "Todo lo comprado ya se usó o es equipo."),
-      el("span", {}, area ? `${pesos((cs.total + bodega) / area)} por hectárea sembrada (${num(area, 2)} ha)` : "Falta el área sembrada para sacar el valor por hectárea")),
+    el("div", { class: "total-proyecto" }, el("span", {}, "Total gastado en el proyecto"), el("b", {}, pesos(gastado)),
+      el("span", {}, `Costo de lo ya usado: ${pesos(cs.total)}${bodega > 0 ? ` · en bodega: ${pesos(bodega)}` : ""}${anticipos > 0 ? ` · anticipos a trabajadores: ${pesos(anticipos)}` : ""}.`),
+      debe > 0 ? el("span", {}, `Se les debe a trabajadores: ${pesos(debe)}.`) : null,
+      el("span", {}, area ? `${pesos(gastado / area)} por hectárea sembrada (${num(area, 2)} ha)` : "Falta el área sembrada para sacar el valor por hectárea")),
     el("div", { class: "row-btns" },
       el("button", { class: "btn primary", onclick: () => formRegistro("gasto", null) }, "+ Agregar gasto"),
-      el("button", { class: "btn", onclick: () => formRegistro("compra", null) }, "+ Compra de insumos")),
+      el("button", { class: "btn", onclick: () => formRegistro("compra", null) }, "+ Compra de insumos"),
+      el("button", { class: "btn", onclick: () => formRegistro("pago", null) }, "+ Pago a trabajador"),
+      el("button", { class: "btn", onclick: formImportar }, "Pegar gastos del chat")),
+    ctas.length ? el("div", { class: "card" }, el("h3", {}, "Cuentas con trabajadores"),
+      el("table", { class: "t" }, el("thead", {}, el("tr", {}, ["Trabajador", "Labores", "Pagado", "Saldo"].map((h, i) => el("th", { class: i ? "n" : "" }, h)))),
+        el("tbody", {}, ctas.map(c => el("tr", { class: c.saldo < 0 ? "fila-alerta" : "" }, el("td", {}, c.nombre), el("td", { class: "n" }, pesos(c.labores)), el("td", { class: "n" }, pesos(c.pagado)),
+          el("td", { class: "n" }, c.saldo > 0 ? `${pesos(c.saldo)} a favor` : c.saldo < 0 ? `se le deben ${pesos(-c.saldo)}` : "al día"))))),
+      el("p", { class: "hint" }, "«A favor» es un anticipo: se va descontando con las labores que haga (anótalas con su nombre en «Quién la hizo»).")) : null,
     el("div", { class: "card" }, el("h3", {}, "En qué se ha ido la plata"),
       filas.length ? el("table", { class: "t" }, el("tbody", {}, filas.map(([k, v]) => el("tr", {}, el("td", {}, k), el("td", { class: "n" }, pesos(v)))),
         el("tr", {}, el("td", {}, el("b", {}, "Costo de lo ya usado")), el("td", { class: "n" }, el("b", {}, pesos(cs.total))))))
@@ -1108,7 +1192,7 @@ function pintarGastos() {
       bodega > 0 ? el("table", { class: "t" }, el("tbody", {}, el("tr", {}, el("td", {}, "Insumos en bodega (comprados, sin aplicar)"), el("td", { class: "n" }, pesos(bodega))),
         el("tr", {}, el("td", {}, el("b", {}, "Total gastado")), el("td", { class: "n" }, el("b", {}, pesos(cs.total + bodega)))))) : null,
       cs.sinPrecio.size ? el("p", { class: "hint" }, `Aplicado sin precio de compra: ${[...cs.sinPrecio].join(", ")}.`) : null),
-    el("div", { class: "chips" }, chip("", "Todos"), chip("bodega", "Compras de bodega"), cats.map(c => chip(c, c.replace(/ \(.*/, "")))),
+    el("div", { class: "chips" }, chip("", "Todos"), chip("bodega", "Compras de bodega"), chip("pagos", "Pagos"), cats.map(c => chip(c, c.replace(/ \(.*/, "")))),
     movs.length ? el("div", { class: "list" }, movs.map(itemRegistro)) : el("div", { class: "empty" }, "No hay gastos aquí todavía. Agrega el primero con el botón de arriba."),
     el("p", { class: "hint" }, "Solo suman los gastos aprobados. Lo que registra el administrador se aprueba solo."));
 }
