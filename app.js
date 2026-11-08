@@ -15,7 +15,7 @@ import { CRONO } from "./cronograma.js";
 import { libroXlsx } from "./excel.js";
 import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.13.1 · 8-nov-2026";
+const VERSION = "0.13.2 · 8-nov-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -1074,7 +1074,7 @@ function formProduccion() {
 
 // ---------- Pegar gastos desde el chat (sin duplicar) ----------
 // Formato: JSON con una lista de objetos { id, tipo, fecha, ...campos del registro, lote?, lista? }. Mismo id = se actualiza, no se duplica.
-const TIPOS_IMP = ["compra", "gasto", "labor", "combustible", "pago"];
+const TIPOS_IMP = ["compra", "gasto", "labor", "combustible", "pago", "fertilizacion", "siembra"];
 function leerBloque(texto) {
   const t = String(texto).trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
   if (t.length > 200000) throw new Error("el texto es muy largo");
