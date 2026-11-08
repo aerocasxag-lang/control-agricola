@@ -1160,7 +1160,7 @@ function pintarGastos() {
   const inv = inventario(todosAp, cat), cs = costos(todosAp.filter(r => r.tipo !== "compra" || esEquipo(r.datos)), inv, precioGalon(todosAp, cat));
   const area = S.lotes.filter(l => !l.archivado).reduce((s, l) => s + (l.area_ha || 0), 0);
   const filas = [["Insumos aplicados (abono, semilla, agroquímicos)", cs.insumos], ["Labores (jornales y tractor)", cs.labores], ["Aplicaciones (dron, camioneta, fumigadores)", cs.aplicaciones],
-    ["Combustible de equipos", cs.combustible], ["Gasolina de riego", cs.gasolinaRiego], ["Equipos y herramientas", cs.equipos],
+    ["Combustible de equipos", cs.combustible], ["Gasolina de riego", cs.gasolinaRiego], ["Equipos comprados (motobomba, sembradora…)", cs.equipos],
     ...Object.entries(cs.porCategoria).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, v])].filter(([, v]) => v > 0);
   const bodega = Object.values(inv).reduce((s, f) => s + (f.costoProm != null ? Math.max(f.saldo, 0) * f.costoProm : 0), 0);
   const ctas = cuentasTrabajadores(todosAp), anticipos = ctas.reduce((s, c) => s + Math.max(0, c.saldo), 0), debe = ctas.reduce((s, c) => s + Math.max(0, -c.saldo), 0);
@@ -1370,7 +1370,7 @@ function hojasExcel() {
       { v: resumen(r), s: "w" }, P(r.estado === "aprobado" ? costoReg(r, inv, pGal) : null), ESTADOS[r.estado] || r.estado, r.autorNombre || "", { v: r.datos?.obs || "", s: "w" }])];
   // 3. Costos por rubro
   const rub = [["Insumos aplicados (abono, semilla, agroquímicos)", cs.insumos], ["Labores (jornales y tractor)", cs.labores], ["Aplicaciones (dron, camioneta, fumigadores)", cs.aplicaciones],
-    ["Combustible de equipos", cs.combustible], ["Gasolina de riego", cs.gasolinaRiego], ["Equipos y herramientas", cs.equipos], ...Object.entries(cs.porCategoria).sort((a, b) => b[1] - a[1])].filter(([, v]) => v > 0);
+    ["Combustible de equipos", cs.combustible], ["Gasolina de riego", cs.gasolinaRiego], ["Equipos comprados (motobomba, sembradora…)", cs.equipos], ...Object.entries(cs.porCategoria).sort((a, b) => b[1] - a[1])].filter(([, v]) => v > 0);
   const costosH = [[H("Rubro"), H("Valor"), H("% del total")], ...rub.map(([k, v]) => [k, P(v), { v: cs.total ? Math.round(v / cs.total * 1000) / 10 : 0, s: "n" }]),
     [{ v: "Costo de lo ya usado", s: "b" }, { v: Math.round(cs.total), s: "$b" }], ["Insumos en bodega", P(bodega)], [{ v: "Total gastado", s: "b" }, { v: Math.round(cs.total + bodega), s: "$b" }]];
   // 4. Gastos y compras
