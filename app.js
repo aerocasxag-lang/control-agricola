@@ -15,7 +15,7 @@ import { CRONO } from "./cronograma.js";
 import { libroXlsx } from "./excel.js";
 import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.13 · 31-oct-2026";
+const VERSION = "0.13.1 · 8-nov-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -1170,7 +1170,7 @@ function pintarGastos() {
     .filter(r => !S.filtroGasto || (S.filtroGasto === "bodega" ? r.tipo === "compra" : S.filtroGasto === "pagos" ? r.tipo === "pago" : r.datos?.categoria === S.filtroGasto));
   const cats = [...new Set(S.registros.filter(r => r.tipo === "gasto").map(r => r.datos?.categoria).filter(Boolean))];
   const chip = (k, t) => el("button", { "aria-pressed": S.filtroGasto === k ? "true" : "false", onclick: () => { S.filtroGasto = k; pintarGastos(); } }, t);
-  $("gastosBody").replaceChildren(selector,
+  $("gastosBody").replaceChildren(...[selector,
     el("div", { class: "total-proyecto" }, el("span", {}, "Total gastado en el proyecto"), el("b", {}, pesos(gastado)),
       el("span", {}, `Costo de lo ya usado: ${pesos(cs.total)}${bodega > 0 ? ` · en bodega: ${pesos(bodega)}` : ""}${anticipos > 0 ? ` · anticipos a trabajadores: ${pesos(anticipos)}` : ""}.`),
       debe > 0 ? el("span", {}, `Se les debe a trabajadores: ${pesos(debe)}.`) : null,
@@ -1194,7 +1194,7 @@ function pintarGastos() {
       cs.sinPrecio.size ? el("p", { class: "hint" }, `Aplicado sin precio de compra: ${[...cs.sinPrecio].join(", ")}.`) : null),
     el("div", { class: "chips" }, chip("", "Todos"), chip("bodega", "Compras de bodega"), chip("pagos", "Pagos"), cats.map(c => chip(c, c.replace(/ \(.*/, "")))),
     movs.length ? el("div", { class: "list" }, movs.map(itemRegistro)) : el("div", { class: "empty" }, "No hay gastos aquí todavía. Agrega el primero con el botón de arriba."),
-    el("p", { class: "hint" }, "Solo suman los gastos aprobados. Lo que registra el administrador se aprueba solo."));
+    el("p", { class: "hint" }, "Solo suman los gastos aprobados. Lo que registra el administrador se aprueba solo.")].filter(x => x != null));
 }
 
 let unsubResp = null;
