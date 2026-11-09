@@ -8,14 +8,14 @@ import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 import { areaHa, parseKml, centroide, fechaLocal, diasEntre, comprimirFoto, csvEscape } from "./util.js";
 import { TIPOS, ORDEN_TIPOS, CAT_DEFECTO, normCat, prodDe, prodsTipo, derivar, vistaCalculo, revisar, resumen, filasCalculadas, fmtDosis,
-  inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO, PROD_DEFECTO, ESCENARIOS, aforoTHa, estimar, cuentasTrabajadores } from "./modulos.js";
+  inventario, precioGalon, costos, consumos, pesos, TIPOS_PROD, UNIDADES_DOSIS, esEquipo, CATEGORIAS_GASTO, PROD_DEFECTO, ESCENARIOS, aforoTHa, estimar, cuentasTrabajadores, cuentaSocio, SOCIO_DEFECTO } from "./modulos.js";
 import { BASES, ponerBase, baseGuardada, teselasZona, descargarTeselas } from "./mapas.js";
 import { procesarGeoTiff, partir, compararVigor, kmlCeldas } from "./orto.js";
 import { CRONO } from "./cronograma.js";
 import { libroXlsx } from "./excel.js";
 import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.14 · 8-nov-2026";
+const VERSION = "0.15 · 8-nov-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -1103,7 +1103,7 @@ function formProduccion() {
 
 // ---------- Pegar gastos desde el chat (sin duplicar) ----------
 // Formato: JSON con una lista de objetos { id, tipo, fecha, ...campos del registro, lote?, lista? }. Mismo id = se actualiza, no se duplica.
-const TIPOS_IMP = ["compra", "gasto", "labor", "combustible", "pago", "fertilizacion", "siembra"];
+const TIPOS_IMP = ["compra", "gasto", "labor", "combustible", "pago", "fertilizacion", "siembra", "dia"];
 function leerBloque(texto) {
   const t = String(texto).trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
   if (t.length > 200000) throw new Error("el texto es muy largo");
@@ -1121,6 +1121,7 @@ function leerBloque(texto) {
       if (c.t === "fotos" || x[c.k] == null || x[c.k] === "") continue;
       const v = x[c.k];
       if (c.t === "num") { const n = Number(v); if (!isFinite(n) || n < 0) err(`${c.l}: número no válido`); d[c.k] = n; }
+      else if (c.t === "sino") d[c.k] = v === true || v === "true" || v === "Sí" || v === "si" || v === "sí";
       else d[c.k] = String(v).slice(0, 500);
     }
     if (x.tipo === "gasto" && d.categoria && !CATEGORIAS_GASTO.includes(d.categoria)) d.categoria = "Otros";
@@ -1176,6 +1177,29 @@ function formImportar() {
     prev, bImp);
 }
 
+function cardSocio(regs, cat) {
+  const so = cat.socio || SOCIO_DEFECTO, c = cuentaSocio(regs, so);
+  const fila = (k, v, b) => el("tr", {}, el("td", {}, b ? el("b", {}, k) : k), el("td", { class: "n" }, b ? el("b", {}, v) : v));
+  return el("div", { class: "card" }, el("h3", {}, `Socio ${so.nombre} y mis días`),
+    el("table", { class: "t" }, el("tbody", {},
+      fila(`Aporte de ${so.nombre}`, pesos(so.aporte)), fila("Gastado con su plata", pesos(c.usado)), fila("Disponible", pesos(c.disponible), true),
+      fila(`A devolverle (aporte + ${pesos(so.rentabilidad)} de rentabilidad)`, pesos(c.devolver)),
+      fila(`Mis días: ${num(c.nDias, 1)} × ${pesos(so.valorDia)}${c.porConfirmar ? ` (${c.porConfirmar} por confirmar)` : ""}`, pesos(c.valorDias), true))),
+    c.disponible < 0 ? el("p", { class: "aviso crit" }, `Se gastó ${pesos(-c.disponible)} más de lo que aportó ${so.nombre}.`) : null,
+    el("p", { class: "hint" }, `Cuenta como plata de ${so.nombre} lo marcado «Fondos de Ray (socio)» en «¿Con qué plata se pagó?». Tus días no suman al costo corriente: se cobran al final.`),
+    el("div", { class: "row-btns" }, el("button", { class: "btn", onclick: () => formRegistro("dia", null) }, "+ Mi día"), el("button", { class: "btn", onclick: formSocio }, "Ajustar")));
+}
+function formSocio() {
+  const so = catActual().socio || SOCIO_DEFECTO;
+  const inp = (id, l, v, t = "number") => { const i = el("input", { id, type: t, inputmode: t === "number" ? "decimal" : null, step: "1000" }); i.value = v ?? ""; return el("label", { for: id }, l, i); };
+  abrirModal("Socio y mis días", inp("soNom", "Nombre del socio", so.nombre, "text"), inp("soAp", "Aporte comprometido ($)", so.aporte), inp("soRe", "Rentabilidad acordada ($)", so.rentabilidad), inp("soDia", "Valor de mi día ($)", so.valorDia),
+    el("button", { class: "btn primary", onclick: () => {
+      const n = id => Math.max(0, parseFloat($(id).value) || 0);
+      setDoc(doc(db, "config", "catalogos"), { socio: { nombre: $("soNom").value.trim().slice(0, 40) || "Socio", aporte: n("soAp"), rentabilidad: n("soRe"), valorDia: n("soDia") } }, { merge: true })
+        .catch(e => toast("No se guardó (" + e.code + ")", true));
+      cerrarModal(); toast("Guardado");
+    } }, "Guardar"));
+}
 // ---------- Gastos (costo total del proyecto) ----------
 S.filtroGasto = "";
 function pintarGastos() {
@@ -1210,6 +1234,7 @@ function pintarGastos() {
       el("button", { class: "btn", onclick: () => formRegistro("compra", null) }, "+ Compra de insumos"),
       el("button", { class: "btn", onclick: () => formRegistro("pago", null) }, "+ Pago a trabajador"),
       el("button", { class: "btn", onclick: formImportar }, "Pegar gastos del chat")),
+    cardSocio(todosAp, cat),
     ctas.length ? el("div", { class: "card" }, el("h3", {}, "Cuentas con trabajadores"),
       el("table", { class: "t" }, el("thead", {}, el("tr", {}, ["Trabajador", "Labores", "Pagado", "Saldo"].map((h, i) => el("th", { class: i ? "n" : "" }, h)))),
         el("tbody", {}, ctas.map(c => el("tr", { class: c.saldo < 0 ? "fila-alerta" : "" }, el("td", {}, c.nombre), el("td", { class: "n" }, pesos(c.labores)), el("td", { class: "n" }, pesos(c.pagado)),
@@ -1559,7 +1584,7 @@ function formCatalogos() {
         const tipo = TIPOS_PROD.find(x => x.toLowerCase() === t.toLowerCase()) || "Otro";
         return { nombre: n, tipo, unidad: /^l/i.test(u) ? "L" : "kg", carencia: nOrNull(c), min: nOrNull(m) }; });
       const plagas = lineas("cPlag").map(s => { const [nombre, u] = s.split(";"); return { nombre: nombre.trim(), umbral: parseFloat(u) || 20 }; });
-      setDoc(doc(db, "config", "catalogos"), { productos, equipos: lineas("cEq"), plagas, precioGalon: nOrNull(pg.value), produccion: cat.produccion }).catch(e => toast("No se guardó: " + e.code, true));
+      setDoc(doc(db, "config", "catalogos"), { productos, equipos: lineas("cEq"), plagas, precioGalon: nOrNull(pg.value), produccion: cat.produccion, socio: cat.socio }).catch(e => toast("No se guardó: " + e.code, true));
       cerrarModal(); toast("Catálogos guardados");
     } }, "Guardar"));
 }

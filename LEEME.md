@@ -1,5 +1,7 @@
 # Control Agrícola · AeroCAS — cómo ponerla a funcionar
 
+Versión 0.15 (8-nov-2026): «¿Con qué plata se pagó?» en gastos, compras y pagos (Jorge, fondos del socio, otro); tarjeta Socio y mis días en Gastos (aporte, gastado, disponible, a devolver; días de trabajo del dueño a su valor, que no suman al costo corriente); nuevo registro «Mi día de trabajo»; el pegado del chat acepta días y sí/no.
+
 Versión 0.14 (8-nov-2026): siembra por surcos (de qué surco a qué surco, largo, distancia entre caballones, hileras, distancia entre semillas) con área, metros de surco, semillas por metro y por hectárea calculados; el lote guarda número y largo de surcos y muestra la barra de surcos sembrados; la primera siembra fija la fecha de siembra y el área del lote si estaban vacías. El pegado del chat acepta fertilización y siembra.
 
 Versión 0.13 (31-oct-2026): pagos a trabajadores y cuentas por trabajador (labores contra pagos, anticipos a favor); campo «Quién la hizo» en Labores; «Pegar gastos del chat» en Gastos para importar el bloque JSON que entrega Claude (mismo id = se actualiza, no se duplica; puede marcar el ítem de la lista de compras). No necesita reglas nuevas.

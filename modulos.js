@@ -20,6 +20,15 @@ export function aBase(cant, unidad) {
 // ---------- Catálogos ----------
 export const TIPOS_PROD = ["Fertilizante", "Enmienda", "Semilla", "Herbicida", "Insecticida", "Fungicida", "Biológico", "Coadyuvante", "Otro"];
 const FITO = ["Herbicida", "Insecticida", "Fungicida", "Biológico", "Coadyuvante", "Otro"];
+export const FONDOS = ["Jorge (propio)", "Fondos de Ray (socio)", "Otro"];
+export const SOCIO_DEFECTO = { nombre: "Ray", aporte: 5000000, rentabilidad: 4000000, valorDia: 80000 };
+// Plata del socio usada, y días del dueño.
+export function cuentaSocio(regs, socio) {
+  const deRay = r => /ray|socio/i.test(r.datos?.fondos || "");
+  const usado = regs.filter(r => ["gasto", "compra", "pago", "combustible"].includes(r.tipo) && deRay(r)).reduce((s, r) => s + (Number(r.datos?.valor) || 0), 0);
+  const dias = regs.filter(r => r.tipo === "dia"), nDias = dias.reduce((s, r) => s + (Number(r.datos?.fraccion) || 1), 0);
+  return { usado, disponible: (socio.aporte || 0) - usado, devolver: (socio.aporte || 0) + (socio.rentabilidad || 0), nDias, valorDias: nDias * (socio.valorDia || 0), porConfirmar: dias.filter(r => r.datos?.confirmado === false).length };
+}
 export const CATEGORIAS_GASTO = ["Riego (tubos, llaves, accesorios)", "Cerca", "Equipos y herramientas", "Transporte y fletes", "Servicios (análisis de suelo, asistencia técnica, maquinaria)", "Mano de obra contratada", "Otros"];
 export const BOMBA = 'Motobomba Barnes HG 2 65 HF (2"x2", 6,5 HP, gasolina)';
 export const CAT_DEFECTO = {
@@ -51,7 +60,7 @@ export function normCat(c) {
     : { tipo: "Otro", unidad: "kg", ...p });
   if (!productos.some(p => p.tipo === "Semilla")) productos.push(CAT_DEFECTO.productos.find(p => p.tipo === "Semilla"));
   const equipos = (c.equipos || c.motobombas || CAT_DEFECTO.equipos).map(e => e === 'Motobomba 2" gasolina' ? BOMBA : e);
-  return { productos, equipos, plagas: c.plagas || CAT_DEFECTO.plagas, precioGalon: c.precioGalon ?? null, produccion: { ...PROD_DEFECTO, ...(c.produccion || {}) } };
+  return { productos, equipos, plagas: c.plagas || CAT_DEFECTO.plagas, precioGalon: c.precioGalon ?? null, produccion: { ...PROD_DEFECTO, ...(c.produccion || {}) }, socio: { ...SOCIO_DEFECTO, ...(c.socio || {}) } };
 }
 export const prodDe = (cat, nombre) => cat.productos.find(p => p.nombre === nombre) || null;
 export function prodsTipo(cat, tipos) { const ps = tipos ? cat.productos.filter(p => tipos.includes(p.tipo)) : cat.productos; return (ps.length ? ps : cat.productos).map(p => p.nombre); }
@@ -134,7 +143,7 @@ export const TIPOS = {
   compra: { nombre: "Compra de insumos", desc: "Entra a bodega con su precio", ico: "🧾", sinLote: true,
     campos: [{ k: "proveedor", l: "Proveedor", t: "txt", req: true }, { k: "producto", l: "Producto o equipo", t: "prod", conEquipos: true, req: true },
       { k: "cantidad", l: "Cantidad", t: "num", step: "0.1", req: true }, { k: "unidad", l: "Unidad (equipos y herramientas: «unidad»)", t: "sel", ops: UNIDADES_COMPRA },
-      { k: "valor", l: "Valor total pagado ($)", t: "num", step: "100", req: true }, { k: "factura", l: "N.º de factura", t: "txt" },
+      { k: "valor", l: "Valor total pagado ($)", t: "num", step: "100", req: true }, { k: "factura", l: "N.º de factura", t: "txt" }, { k: "fondos", l: "¿Con qué plata se pagó?", t: "sel", ops: FONDOS },
       { k: "fotos", l: "Foto de la factura", t: "fotos" }, obs] },
   gasto: { nombre: "Gasto del proyecto", desc: "Tubos, llaves, alambre, transporte, servicios…", ico: "💵", sinLote: true,
     nota: "Todo lo que se paga y no es un insumo de bodega (abono, semilla, agroquímicos): eso va en «Compra de insumos» para que la bodega lo descuente.",
@@ -142,7 +151,7 @@ export const TIPOS = {
       { k: "descripcion", l: "Qué se compró o pagó", t: "txt", req: true, ph: 'Ej.: tubo PVC 2", llave de paso 1", alambre de púas' },
       { k: "cantidad", l: "Cantidad", t: "num", step: "0.1" }, { k: "unidad", l: "Unidad", t: "sel", ops: ["unidad", "metros", "rollos", "tramos", "kg", "galones", "bultos", "viaje", "servicio", "global"] },
       { k: "valor", l: "Valor total pagado ($)", t: "num", step: "100", req: true },
-      { k: "proveedor", l: "Proveedor o a quién se le pagó", t: "txt" }, { k: "factura", l: "N.º de factura", t: "txt" },
+      { k: "proveedor", l: "Proveedor o a quién se le pagó", t: "txt" }, { k: "factura", l: "N.º de factura", t: "txt" }, { k: "fondos", l: "¿Con qué plata se pagó?", t: "sel", ops: FONDOS },
       { k: "fotos", l: "Foto de la factura o del recibo", t: "fotos" }, obs] }
 };
 TIPOS.pago = { nombre: "Pago a trabajador", desc: "Abonos y anticipos (Jonatan…)", ico: "🤝", sinLote: true,
@@ -150,7 +159,13 @@ TIPOS.pago = { nombre: "Pago a trabajador", desc: "Abonos y anticipos (Jonatan�
   campos: [{ k: "trabajador", l: "Trabajador", t: "txt", req: true, sug: ["Jonatan"] }, { k: "valor", l: "Valor pagado ($)", t: "num", step: "1000", req: true },
     { k: "concepto", l: "Por qué se le pagó", t: "txt", ph: "Ej.: horas de arado y anticipo" }, { k: "medio", l: "Cómo se pagó", t: "sel", ops: ["Efectivo", "Nequi", "Transferencia", "Otro"] },
     { k: "fotos", l: "Foto del recibo o comprobante", t: "fotos" }, { k: "obs", l: "Observaciones", t: "texto" }] };
-export const ORDEN_TIPOS = ["riego", "fertilizacion", "plaga", "fumigacion", "inspeccion", "siembra", "labor", "combustible", "cosecha", "compra", "gasto", "pago"];
+TIPOS.pago.campos.splice(4, 0, { k: "fondos", l: "¿Con qué plata se pagó?", t: "sel", ops: FONDOS });
+// Días de trabajo del dueño del proyecto: no son costo corriente; se cobran al final del ciclo.
+TIPOS.dia = { nombre: "Mi día de trabajo", desc: "Días que le dedicas al proyecto", ico: "📅", sinLote: true,
+  nota: "No suma al costo del día a día: es lo que te cobras al final del ciclo. El valor del día se ajusta en Gastos → Socio y mis días.",
+  campos: [{ k: "actividad", l: "Qué hiciste", t: "txt", req: true, ph: "Ej.: encalado, compra de insumos en Yopal" },
+    { k: "fraccion", l: "Cuánto del día", t: "sel", ops: ["1", "0.5"], def: "1" }, { k: "confirmado", l: "¿Fecha confirmada?", t: "sino", def: true }, obs] };
+export const ORDEN_TIPOS = ["riego", "fertilizacion", "plaga", "fumigacion", "inspeccion", "siembra", "labor", "combustible", "cosecha", "compra", "gasto", "pago", "dia"];
 // Cuentas con trabajadores: labores hechas (lo que se le debe) contra pagos (lo que se le dio).
 const nomT = t => String(t || "").trim().replace(/\s+/g, " ");
 export function cuentasTrabajadores(regs) {
@@ -264,6 +279,7 @@ export function resumen(r) {
     case "fumigacion": return `${fmtDosis(d.productos)} · ${num(d.area, 2)} ha · ${d.metodo || ""}${d.carencia ? ` · carencia hasta ${fmtF(d.fechaLibre)}` : ""}${d.costoAplicacion ? ` · ${pesos(d.costoAplicacion)}` : ""}`;
     case "inspeccion": return [d.fenologia, d.alturaProm ? num(d.alturaProm, 0) + " cm" : null, d.plantasM ? num(d.plantasM, 1) + " pl/m" : null, d.kgM ? `aforo ${num(d.kgM, 1)} kg/m` : null, d.sanitario].filter(Boolean).join(" · ");
     case "siembra": return `${d.nSurcos ? `surcos ${d.surcoDesde}–${d.surcoHasta} · ` : ""}${num(d.area, 2)} ha · ${num(d.kgSemilla, 1)} kg de ${d.semilla}${d.kgHa ? ` (${num(d.kgHa, 1)} kg/ha)` : ""}`;
+    case "dia": return `${d.fraccion === "0.5" ? "Medio día" : "Día"} · ${d.actividad}${d.confirmado === false ? " · por confirmar" : ""}`;
     case "pago": return `${d.trabajador} · ${pesos(d.valor)}${d.concepto ? " · " + d.concepto : ""}`;
     case "labor": return `${d.trabajador ? d.trabajador + " · " : ""}${d.labor || "Labor"} · ${pesos(d.total)}${d.jornales ? ` · ${num(d.jornales, 1)} jornales` : ""}${d.horasTractor ? ` · ${num(d.horasTractor, 1)} h tractor` : ""}`;
     case "combustible": return `${d.equipo || "Equipo"} · ${num(d.galones, 1)} gal ${d.combustible || ""} · ${pesos(d.valor)}`;
