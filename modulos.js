@@ -102,8 +102,13 @@ export const TIPOS = {
         ayuda: "Opcional, cerca del corte: corta todas las plantas de un tramo de surco y pésalas en verde. Con esto la app estima las toneladas por hectárea." },
       { k: "metrosMuestra", l: "Aforo: largo del tramo cortado (m)", t: "num", step: "0.5", def: 5 },
       { k: "sanitario", l: "Estado sanitario", t: "sel", ops: ["Bueno", "Regular", "Malo"] }, fotos, obs] },
-  siembra: { nombre: "Siembra", desc: "Área, semilla, kg/ha, método", ico: "🌾",
-    campos: [{ k: "area", l: "Área sembrada (ha)", t: "num", step: "0.01", req: true },
+  siembra: { nombre: "Siembra", desc: "Surcos sembrados, semilla, población", ico: "🌾",
+    nota: "Pon de qué surco a qué surco sembraste. Con el largo, la distancia entre caballones y la distancia entre semillas la app calcula el área, las semillas por metro y las plantas por hectárea.",
+    campos: [{ k: "surcoDesde", l: "Desde el surco n.º", t: "num" }, { k: "surcoHasta", l: "Hasta el surco n.º", t: "num" },
+      { k: "largoSurco", l: "Largo de cada surco (m)", t: "num", step: "0.5" }, { k: "distCaballon", l: "Distancia entre caballones o surcos (m)", t: "num", step: "0.01" },
+      { k: "hileras", l: "Hileras por caballón", t: "sel", ops: ["1", "2"] }, { k: "distSemillas", l: "Distancia entre semillas en la hilera (cm)", t: "num", step: "0.5" },
+      { k: "semPorSitio", l: "Semillas por sitio", t: "num", def: 1 },
+      { k: "area", l: "Área sembrada (ha) — se calcula sola con los surcos", t: "num", step: "0.01" },
       { k: "semilla", l: "Semilla", t: "prod", tipos: ["Semilla"], req: true },
       { k: "kgSemilla", l: "Semilla usada (kg)", t: "num", step: "0.1", req: true },
       { k: "loteSemilla", l: "Lote de la bolsa (etiqueta)", t: "txt" },
@@ -182,7 +187,15 @@ export function derivar(tipo, d, cat, fechaHecho) {
   }
   if (tipo === "inspeccion") { const a = parseAlturas(d.alturas); d.nAlturas = a.length; d.alturaProm = a.length ? r1(a.reduce((s, x) => s + x, 0) / a.length, 1) : null;
     d.kgM = d.pesoMuestra > 0 && d.metrosMuestra > 0 ? r1(d.pesoMuestra / d.metrosMuestra, 2) : null; }
-  if (tipo === "siembra") d.kgHa = d.area > 0 ? r1(d.kgSemilla / d.area, 1) : null;
+  if (tipo === "siembra") {
+    d.nSurcos = d.surcoDesde > 0 && d.surcoHasta >= d.surcoDesde ? d.surcoHasta - d.surcoDesde + 1 : null;
+    d.mLineales = d.nSurcos && d.largoSurco ? Math.round(d.nSurcos * d.largoSurco) : null;
+    const aCalc = d.mLineales && d.distCaballon ? r1(d.mLineales * d.distCaballon / 10000, 2) : null;
+    if (!(d.area > 0) && aCalc) { d.area = aCalc; d.areaCalculada = true; } else if (d.area > 0) d.areaCalculada = false;
+    d.semM = d.distSemillas > 0 ? r1((Number(d.hileras) || 1) * 100 / d.distSemillas * (d.semPorSitio || 1), 1) : null;
+    d.semHa = d.semM && d.distCaballon ? Math.round(d.semM / d.distCaballon * 10000) : null;
+    d.kgHa = d.area > 0 ? r1(d.kgSemilla / d.area, 1) : null;
+  }
   if (tipo === "labor") d.total = Math.round((d.jornales || 0) * (d.valorJornal || 0) + (d.horasTractor || 0) * (d.valorHoraTractor || 0) + (d.otros || 0));
   if (tipo === "combustible") d.precioGal = d.galones > 0 ? Math.round(d.valor / d.galones) : null;
   if (tipo === "cosecha") { d.tSiloHa = d.area > 0 ? r1(d.tSilo / d.area, 1) : null; d.ingreso = d.precioT ? Math.round(d.tSilo * d.precioT) : null; }
@@ -202,7 +215,9 @@ export function vistaCalculo(tipo, d) {
       d.costoAplicacion ? `Aplicación: ${pesos(d.costoAplicacion)}${d.area > 0 ? ` (${pesos(d.costoAplicacion / d.area)}/ha)` : ""}` : ""].filter(Boolean).join(" · ") };
   if (tipo === "inspeccion" && d.kgM) return { cls: "ok", titulo: "Aforo", valor: `${num(d.kgM, 2)} kg por metro`, texto: `≈ ${num(aforoTHa(d.kgM, PROD_DEFECTO.distSurcos), 1)} t de forraje verde por ha con surcos a ${PROD_DEFECTO.distSurcos} m` };
   if (tipo === "inspeccion") return { cls: d.alturaProm ? "ok" : "", titulo: "Altura promedio", valor: d.alturaProm ? num(d.alturaProm, 1) + " cm" : "—", texto: d.nAlturas ? `${d.nAlturas} plantas medidas${d.nAlturas < 10 ? " (lo ideal son 10)" : ""}` : "" };
-  if (tipo === "siembra") return { cls: d.kgHa ? "ok" : "", titulo: "Semilla por hectárea", valor: d.kgHa ? num(d.kgHa, 1) + " kg/ha" : "—" };
+  if (tipo === "siembra") return { cls: d.kgHa ? "ok" : "", titulo: "Semilla por hectárea", valor: d.kgHa ? num(d.kgHa, 1) + " kg/ha" : "—",
+    texto: [d.nSurcos ? `${d.nSurcos} surcos (${d.surcoDesde} a ${d.surcoHasta})` : "", d.mLineales ? `${num(d.mLineales, 0)} m de surco` : "", d.area ? `${num(d.area, 2)} ha${d.areaCalculada ? " calculadas" : ""}` : "",
+      d.semM ? `${num(d.semM, 1)} semillas por metro de caballón` : "", d.semHa ? `≈ ${num(d.semHa / 1000, 0)} mil semillas/ha` : ""].filter(Boolean).join(" · ") };
   if (tipo === "labor") return { cls: d.total ? "ok" : "", titulo: "Costo de la labor", valor: pesos(d.total) };
   if (tipo === "pago") return { cls: d.valor ? "ok" : "", titulo: "Pago", valor: pesos(d.valor), texto: "No suma al costo: se cruza con las labores del trabajador." };
   if (tipo === "combustible") return { cls: d.precioGal ? "ok" : "", titulo: "Precio del galón", valor: pesos(d.precioGal) };
@@ -227,6 +242,8 @@ export function revisar(tipo, d, cat, lote) {
     if (d.sinCarencia?.length) w(`Sin carencia en el catálogo: ${d.sinCarencia.join(", ")}. Pídele al administrador que la anote.`);
     if (lote?.fechaCorte && d.fechaLibre && d.carencia && d.fechaLibre > lote.fechaCorte) w(`La carencia termina el ${fmtF(d.fechaLibre)}, después del corte previsto (${fmtF(lote.fechaCorte)}).`);
   }
+  if (tipo === "siembra" && !(d.area > 0)) b("Falta el área: pon el área o los surcos con su largo y la distancia entre caballones.");
+  if (tipo === "siembra" && d.surcoDesde && d.surcoHasta && d.surcoHasta < d.surcoDesde) b("El surco final debe ser mayor o igual al inicial.");
   if (tipo === "siembra" && d.kgHa && (d.kgHa < 5 || d.kgHa > 15)) w(`${num(d.kgHa, 1)} kg/ha se sale de lo normal para sorgo (7 a 12). Revisa el área y los kilos.`);
   if (tipo === "cosecha" && d.tVerde && d.tSilo > d.tVerde) b("El silo no puede pesar más que el forraje verde.");
   if (tipo === "compra" || tipo === "fertilizacion") {
@@ -246,7 +263,7 @@ export function resumen(r) {
     case "plaga": return `${d.plaga} · ${num(d.pct, 1)} %${d.sobreUmbral ? " · sobre el umbral" : ""}`;
     case "fumigacion": return `${fmtDosis(d.productos)} · ${num(d.area, 2)} ha · ${d.metodo || ""}${d.carencia ? ` · carencia hasta ${fmtF(d.fechaLibre)}` : ""}${d.costoAplicacion ? ` · ${pesos(d.costoAplicacion)}` : ""}`;
     case "inspeccion": return [d.fenologia, d.alturaProm ? num(d.alturaProm, 0) + " cm" : null, d.plantasM ? num(d.plantasM, 1) + " pl/m" : null, d.kgM ? `aforo ${num(d.kgM, 1)} kg/m` : null, d.sanitario].filter(Boolean).join(" · ");
-    case "siembra": return `${num(d.area, 2)} ha · ${num(d.kgSemilla, 1)} kg de ${d.semilla}${d.kgHa ? ` (${num(d.kgHa, 1)} kg/ha)` : ""}`;
+    case "siembra": return `${d.nSurcos ? `surcos ${d.surcoDesde}–${d.surcoHasta} · ` : ""}${num(d.area, 2)} ha · ${num(d.kgSemilla, 1)} kg de ${d.semilla}${d.kgHa ? ` (${num(d.kgHa, 1)} kg/ha)` : ""}`;
     case "pago": return `${d.trabajador} · ${pesos(d.valor)}${d.concepto ? " · " + d.concepto : ""}`;
     case "labor": return `${d.trabajador ? d.trabajador + " · " : ""}${d.labor || "Labor"} · ${pesos(d.total)}${d.jornales ? ` · ${num(d.jornales, 1)} jornales` : ""}${d.horasTractor ? ` · ${num(d.horasTractor, 1)} h tractor` : ""}`;
     case "combustible": return `${d.equipo || "Equipo"} · ${num(d.galones, 1)} gal ${d.combustible || ""} · ${pesos(d.valor)}`;
@@ -265,6 +282,7 @@ export function filasCalculadas(r) {
   if (r.tipo === "fumigacion") { add("Duración", d.horas != null ? num(d.horas, 2) + " h" : null); add("Carencia", d.carencia ? `${d.carencia} días, hasta el ${fmtF(d.fechaLibre)}` : "Sin carencia"); if (d.costoAplicacion && d.area > 0) add("Costo de la aplicación por ha", pesos(d.costoAplicacion / d.area)); }
   if (r.tipo === "inspeccion" && d.alturaProm) add("Altura promedio", `${num(d.alturaProm, 1)} cm (${d.nAlturas} plantas)`);
   if (r.tipo === "siembra" && d.kgHa) add("Semilla por hectárea", num(d.kgHa, 1) + " kg/ha");
+  if (r.tipo === "siembra" && d.semM) add("Semillas por metro", num(d.semM, 1) + (d.semHa ? ` (≈ ${num(d.semHa / 1000, 0)} mil/ha)` : ""));
   if (r.tipo === "labor") add("Costo de la labor", pesos(d.total));
   if (r.tipo === "combustible") add("Precio del galón", pesos(d.precioGal));
   if (r.tipo === "cosecha") { add("Silo por hectárea", d.tSiloHa ? num(d.tSiloHa, 1) + " t/ha" : null); add("Ingreso", d.ingreso ? pesos(d.ingreso) : null); }

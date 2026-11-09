@@ -218,3 +218,4 @@ table.t tr.fila-alerta td{color:var(--crit)}
 .item.ag .top span:first-child{font-weight:600;overflow-wrap:anywhere}
 .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 table.t.rend{font-size:.86rem} table.t.rend td.n,table.t.rend th.n{white-space:nowrap;padding-left:8px} table.t.rend td:first-child{min-width:7.5em}
+.barra-surcos{position:relative;display:block;height:10px;border-radius:5px;background:var(--line);overflow:hidden}.barra-surcos i{position:absolute;top:0;bottom:0;background:var(--ok)}

@@ -15,7 +15,7 @@ import { CRONO } from "./cronograma.js";
 import { libroXlsx } from "./excel.js";
 import { SECCIONES, LISTA_BASE, tipoPorSeccion, RUBRO_POR_SECCION } from "./lista.js";
 
-const VERSION = "0.13.2 · 8-nov-2026";
+const VERSION = "0.14 · 8-nov-2026";
 // Si una librería no cargó (pasa una vez justo después de actualizar), se recarga la página una sola vez.
 if (typeof L === "undefined") {
   let ya = false; try { ya = sessionStorage.getItem("recargaLibs") === "1"; sessionStorage.setItem("recargaLibs", "1"); } catch (e) {}
@@ -426,6 +426,32 @@ function cerrarFicha() {
 }
 $("fCerrar").addEventListener("click", cerrarFicha);
 $("fMasBtn").addEventListener("click", () => { $("fMas").hidden = !$("fMas").hidden; $("fMasBtn").textContent = $("fMas").hidden ? "Más detalles ▾" : "Menos detalles ▴"; });
+// Surcos sembrados del lote a partir de los registros de siembra vigentes.
+function surcosLote(l) {
+  const sem = S.registros.filter(r => r.loteId === l.id && r.tipo === "siembra" && vigente(r) && r.datos?.surcoDesde && r.datos?.surcoHasta)
+    .map(r => [Number(r.datos.surcoDesde), Number(r.datos.surcoHasta), r.fechaHecho]).sort((a, b) => a[0] - b[0]);
+  const marcados = new Set(); for (const [a, b] of sem) for (let i = a; i <= b; i++) marcados.add(i);
+  const max = Math.max(0, ...sem.map(x => x[1])), total = l.nSurcos || max || null;
+  let siguiente = 1; while (marcados.has(siguiente)) siguiente++;
+  return { tramos: sem, n: marcados.size, total, siguiente: total && siguiente > total ? null : siguiente };
+}
+function barraSurcos(l) {
+  const sp = surcosLote(l);
+  if (!sp.tramos.length) return l.nSurcos ? `${l.nSurcos} surcos · ninguno sembrado aún` : "Sin siembra por surcos";
+  const tot = sp.total || sp.n, bar = el("span", { class: "barra-surcos", role: "img", "aria-label": `${sp.n} de ${tot} surcos sembrados` });
+  for (const [a, b] of sp.tramos) bar.append(el("i", { style: `left:${(a - 1) / tot * 100}%;width:${(b - a + 1) / tot * 100}%` }));
+  return el("span", { style: "display:grid;gap:4px" }, `${sp.n} de ${tot} sembrados (${Math.round(sp.n / tot * 100)} %) · ${sp.tramos.map(t => `${t[0]}–${t[1]}`).join(", ")}`, bar);
+}
+// Tras registrar una siembra: fecha de siembra del lote (la primera) y área sembrada (suma), solo si el admin no las fijó a mano distinto.
+function actualizarLoteSiembra(loteId) {
+  const l = lotePorId(loteId); if (!l || !S.admin) return;
+  const sem = S.registros.filter(r => r.loteId === loteId && r.tipo === "siembra" && vigente(r));
+  if (!sem.length) return;
+  const fecha = sem.map(r => r.fechaHecho).sort()[0], area = Math.round(sem.reduce((s, r) => s + (Number(r.datos?.area) || 0), 0) * 100) / 100;
+  const c = {}; if (!l.fechaSiembra || l.fechaSiembraAuto) { if (l.fechaSiembra !== fecha) { c.fechaSiembra = fecha; c.fechaSiembraAuto = true; } }
+  if (area && (!l.area_ha || l.areaAuto) && l.area_ha !== area) { c.area_ha = area; c.areaAuto = true; }
+  if (Object.keys(c).length) updateDoc(doc(db, "lotes", loteId), c).catch(() => {});
+}
 function pintarFicha(l) {
   if (!l) return;
   $("ficha").hidden = false; $("mapBottom").hidden = true;
@@ -435,7 +461,7 @@ function pintarFicha(l) {
   const dds = l.fechaSiembra ? diasEntre(l.fechaSiembra, fechaLocal()) : null;
   const filas = [["Municipio", l.municipio || "—"], ["Ciclo", l.ciclo || "—"],
     ["Siembra", l.fechaSiembra ? `${fmtFecha(l.fechaSiembra)} (${dds >= 0 ? dds + " días" : "faltan " + -dds + " días"})` : "Sin fecha"],
-    ["Área sembrada", l.area_ha ? num(l.area_ha, 2) + " ha" : "Sin registrar"], ["Área del borde", aBorde ? num(aBorde, 2) + " ha" : "Sin borde"],
+    ["Área sembrada", l.area_ha ? num(l.area_ha, 2) + " ha" : "Sin registrar"], ["Surcos", barraSurcos(l)], ["Área del borde", aBorde ? num(aBorde, 2) + " ha" : "Sin borde"],
     ["Secciones de riego", l.secciones || "—"], ["Corte previsto", l.fechaCorte ? `${fmtFecha(l.fechaCorte)} (${diasEntre(fechaLocal(), l.fechaCorte) >= 0 ? "faltan " + diasEntre(fechaLocal(), l.fechaCorte) + " días" : "ya pasó"})` : "Sin fecha"]];
   $("fMas").replaceChildren(...filas.flatMap(([k, v]) => [el("dt", {}, k), el("dd", {}, v)]));
   $("fEditar").hidden = !S.admin;
@@ -522,12 +548,13 @@ function formLote(l) {
     el("div", { class: "grid2" }, inp("loFinca", "Finca", v.finca), inp("loMun", "Municipio", v.municipio)),
     el("div", { class: "grid2" }, inp("loArea", "Área sembrada (ha)", v.area_ha, "number", { step: "0.01", inputmode: "decimal" }), inp("loSecc", "Secciones de riego", v.secciones, "number", { inputmode: "numeric" })),
     el("div", { class: "grid2" }, el("label", { for: "loCiclo" }, "Ciclo actual", sel), inp("loSiembra", "Fecha de siembra", v.fechaSiembra, "date")),
-    el("div", { class: "grid2" }, inp("loCorte", "Corte previsto", v.fechaCorte, "date"), inp("loDist", "Distancia entre surcos (m)", v.distSurcos, "number", { step: "0.05", inputmode: "decimal", placeholder: "0,8" })),
+    el("div", { class: "grid2" }, inp("loCorte", "Corte previsto", v.fechaCorte, "date"), inp("loDist", "Distancia entre caballones o surcos (m)", v.distSurcos, "number", { step: "0.05", inputmode: "decimal", placeholder: "1,55" })),
+    el("div", { class: "grid2" }, inp("loNSurcos", "Número de surcos del lote", v.nSurcos, "number", { inputmode: "numeric", placeholder: "226" }), inp("loLargo", "Largo de los surcos (m)", v.largoSurco, "number", { step: "0.5", inputmode: "decimal", placeholder: "88" })),
     el("label", { for: "loBorde" }, "Borde del lote (KML o KMZ)", archivo), info,
     el("button", { class: "btn primary", onclick: () => {
       const nombre = $("loNombre").value.trim(); if (!nombre) { toast("Falta el nombre", true); return; }
       const datos = { nombre, finca: $("loFinca").value.trim(), municipio: $("loMun").value.trim(), area_ha: parseFloat($("loArea").value) || null,
-        secciones: parseInt($("loSecc").value) || null, ciclo: sel.value, fechaSiembra: $("loSiembra").value || null, fechaCorte: $("loCorte").value || null, distSurcos: parseFloat($("loDist").value) || null, borde, actualizado: serverTimestamp() };
+        secciones: parseInt($("loSecc").value) || null, ciclo: sel.value, fechaSiembra: $("loSiembra").value || null, fechaCorte: $("loCorte").value || null, distSurcos: parseFloat($("loDist").value) || null, nSurcos: parseInt($("loNSurcos").value) || null, largoSurco: parseFloat($("loLargo").value) || null, borde, actualizado: serverTimestamp() };
       const ref = l ? doc(db, "lotes", l.id) : doc(collection(db, "lotes"));
       setDoc(ref, l ? datos : { ...datos, creado: serverTimestamp(), archivado: false }, { merge: true }).catch(e => toast("No se guardó: " + e.code, true));
       cerrarModal(); toast(l ? "Lote actualizado" : "Lote creado"); pintarLotes.ajustado = false;
@@ -584,6 +611,7 @@ function formRegistro(tipo, loteId, previo = null, opts = {}) {
   const T = TIPOS[tipo], l = T.sinLote ? null : lotePorId(loteId), cat = catActual();
   if (!T.sinLote && !l) { toast("Lote no encontrado", true); return; }
   const val = previo ? { ...previo.datos } : { ...(opts.inicial || {}) };
+  if (tipo === "siembra" && !previo && l) { const sp = surcosLote(l); if (sp.siguiente) val.surcoDesde ??= sp.siguiente; if (l.largoSurco) val.largoSurco ??= l.largoSurco; if (l.distSurcos) val.distCaballon ??= l.distSurcos; val.hileras ??= l.hileras || "2"; }
   const fotos = [], ctrls = {}, partes = [];
   const fecha = el("input", { type: "date", id: "rFecha", max: fechaLocal() }); fecha.value = previo?.fechaHecho || fechaLocal();
   const just = el("input", { type: "text", id: "rJust", placeholder: "¿Por qué se anota días después?" }); just.value = previo?.justificacion || "";
@@ -716,6 +744,7 @@ function guardarRegistro({ tipo, loteId, datos, fechaHecho, justificacion, fotos
   auditar(ref.id, "crear", null, { datos, estado: reg.estado });
   if (S.admin) aplicarSiembra(reg);
   toast(navigator.onLine ? "Registro guardado" : "Guardado en el celular. Se envía cuando haya señal.");
+  if (tipo === "siembra" && loteId) setTimeout(() => actualizarLoteSiembra(loteId), 1500);
   return ref.id;
 }
 function auditar(registroId, accion, antes, despues, motivo = "") {
@@ -1136,7 +1165,8 @@ function formImportar() {
       }
       await b.commit();
       for (const f of filas) if (f.lista) { const it = S.lista.find(i => i.nombre.toLowerCase() === f.lista.toLowerCase()); if (it && it.registroId !== f.docId) guardarItem(it.id, { registroId: f.docId, comprado: true }); }
-      cerrarModal(); toast(`${n} gastos importados`);
+      cerrarModal(); toast(`${n} registros importados`);
+      for (const id of new Set(filas.filter(f => f.tipo === "siembra" && f.l).map(f => f.l.id))) setTimeout(() => actualizarLoteSiembra(id), 1500);
     } catch (e) { bImp.disabled = false; toast("No se pudo importar (" + (e.code || e.message) + ")", true); }
   });
   abrirModal("Pegar gastos del chat",

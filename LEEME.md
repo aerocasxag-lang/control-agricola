@@ -1,5 +1,7 @@
 # Control Agrícola · AeroCAS — cómo ponerla a funcionar
 
+Versión 0.14 (8-nov-2026): siembra por surcos (de qué surco a qué surco, largo, distancia entre caballones, hileras, distancia entre semillas) con área, metros de surco, semillas por metro y por hectárea calculados; el lote guarda número y largo de surcos y muestra la barra de surcos sembrados; la primera siembra fija la fecha de siembra y el área del lote si estaban vacías. El pegado del chat acepta fertilización y siembra.
+
 Versión 0.13 (31-oct-2026): pagos a trabajadores y cuentas por trabajador (labores contra pagos, anticipos a favor); campo «Quién la hizo» en Labores; «Pegar gastos del chat» en Gastos para importar el bloque JSON que entrega Claude (mismo id = se actualiza, no se duplica; puede marcar el ítem de la lista de compras). No necesita reglas nuevas.
 
 Versión 0.12 (27-oct-2026): Excel con formato desde el Panel (resumen, registros, costos por rubro, gastos y compras, bodega, fumigaciones, monitoreo de plagas, agenda y lista de compras) y copia de seguridad en Yo (ZIP con todos los datos en JSON, el Excel y las fotos); la campana recuerda la copia cada 7 días. Se arma en el celular con JSZip, sin librerías nuevas. No necesita reglas nuevas.
